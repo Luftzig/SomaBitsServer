@@ -23,8 +23,8 @@ sourceSets {
 }
 
 repositories {
-    mavenLocal()
     jcenter()
+    mavenLocal()
     maven { url 'https://kotlin.bintray.com/ktor' }
 }
 
@@ -36,5 +36,13 @@ dependencies {
     implementation "io.ktor:ktor-websockets:$ktor_version"
     implementation "io.ktor:ktor-network:$ktor_version"
     implementation "io.ktor:ktor-serialization:$ktor_version"
+    implementation "io.ktor:ktor-gson:$ktor_version"
+    implementation "javax.jmdns:jmdns:3.4.1"
     testImplementation "io.ktor:ktor-server-tests:$ktor_version"
+}
+
+compileKotlin {
+    kotlinOptions {
+        freeCompilerArgs = ["-Xinline-classes"]
+    }
 }
