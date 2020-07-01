@@ -13,13 +13,19 @@ import io.ktor.http.cio.websocket.Frame
 import io.ktor.http.cio.websocket.pingPeriod
 import io.ktor.http.cio.websocket.readText
 import io.ktor.http.cio.websocket.timeout
+import io.ktor.network.selector.ActorSelectorManager
+import io.ktor.network.sockets.aSocket
+import io.ktor.network.sockets.openWriteChannel
 import io.ktor.response.respond
 import io.ktor.response.respondText
 import io.ktor.routing.get
 import io.ktor.routing.routing
+import io.ktor.util.cio.write
 import io.ktor.websocket.webSocket
+import kotlinx.coroutines.Dispatchers
 import org.slf4j.LoggerFactory
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.text.DateFormat
 import java.time.Duration
@@ -34,7 +40,7 @@ fun getLocalAddresses(): Iterable<InetAddress> =
         .filter { it.address.isSiteLocalAddress }
         .map { it.address }
 
-data class StatusResponse(val status: String)
+data class StatusResponse(val status: String, val message: String?)
 
 @Suppress("unused") // Referenced in application.conf
 @kotlin.jvm.JvmOverloads
@@ -42,6 +48,7 @@ fun Application.module(testing: Boolean = false) {
 
     val loggerContext = LoggerFactory.getILoggerFactory() as LoggerContext
     loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).level = Level.INFO
+    loggerContext.getLogger(log.name).level = Level.DEBUG
 
     install(DataConversion)
 
@@ -61,7 +68,7 @@ fun Application.module(testing: Boolean = false) {
 
     val servicesManager =
         ServicesManager(
-            getLocalAddresses().first(),
+            null,
             defaultDiscoveryServices().map { ServiceName(it) },
             defaultDiscoveryServices().associate {
                 ServiceName(it) to AdvertiseServerData(defaultOscPort(), mapOf("server" to ""))
@@ -78,6 +85,30 @@ fun Application.module(testing: Boolean = false) {
 
         get("/discover") {
             call.respond(servicesManager.services)
+        }
+
+        get("/connect/{service}/{port}") {
+            val serviceName = call.parameters["service"]?.let { it1 -> ServiceName(it1) }
+            val result = servicesManager.services[serviceName]?.runCatching {
+                val socket = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp()
+                val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
+                val boundSocket = socket.connect(InetSocketAddress(address, handshakePort))
+                val bestAddress =
+                    getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(address).length }
+                boundSocket.openWriteChannel(autoFlush = true).write("${bestAddress?.hostName}\r\n")
+                boundSocket.close()
+                call.respond(StatusResponse("ok", "Sent address $bestAddress to $address:$handshakePort"))
+            }
+            when {
+                result == null -> call.respond(StatusResponse("failed", "Failed to find service '$serviceName'"))
+                result.isFailure -> call.respond(
+                    StatusResponse(
+                        "failed",
+                        "Failed to connect with service. Error: ${result.exceptionOrNull()}"
+                    )
+                )
+            }
+
         }
 
         webSocket("/connect/{service}") {
@@ -101,4 +132,14 @@ private fun Application.defaultDiscoveryServices() =
 
 private fun Application.defaultOscPort(): Int =
     environment.config.property("ktor.application.defaultOscPort").getString().toInt()
+
+private fun Application.defaultHandshakePort(): Int =
+    environment.config.property("ktor.application.defaultHandshakePort").getString().toInt()
+
+private fun String.longestMatchingSubstring(other: String): String =
+    if (this.isNotEmpty() && other.isNotEmpty() && this[0] == other[0]) {
+        this[0] + this.drop(1).longestMatchingSubstring(other.drop(1))
+    } else {
+        ""
+    }
 

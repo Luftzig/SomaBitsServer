@@ -38,6 +38,7 @@ dependencies {
     implementation "io.ktor:ktor-serialization:$ktor_version"
     implementation "io.ktor:ktor-gson:$ktor_version"
     implementation "org.jmdns:jmdns:3.5.5"
+    implementation "com.illposed.osc:javaosc-core:0.7"
     testImplementation "io.ktor:ktor-server-tests:$ktor_version"
 }
 

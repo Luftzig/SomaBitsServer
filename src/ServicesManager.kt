@@ -22,7 +22,7 @@ data class AdvertiseServerData(
 )
 
 class ServicesManager(
-    val address: InetAddress,
+    val address: InetAddress?,
     val servicesToUse: Iterable<ServiceName>,
     val advertiseServers: Map<ServiceName, AdvertiseServerData>
 ) {
@@ -30,6 +30,7 @@ class ServicesManager(
     val services: MutableMap<ServiceName, BitsService> = mutableMapOf()
 
     init {
+        log.debug("Starting listeners for $servicesToUse on $address")
         servicesToUse.forEach {
             mDNSInstance.addServiceListener(it.name, object : ServiceListener {
                 override fun serviceResolved(event: ServiceEvent?) {
@@ -39,7 +40,7 @@ class ServicesManager(
 
                 override fun serviceRemoved(event: ServiceEvent?) {
                     log.debug("Service $it removed on ${mDNSInstance.name}: $event")
-                    event?.run { services.remove(ServiceName(event.name)) }
+//                    event?.run { services.remove(ServiceName(event.name)) }
                 }
 
                 override fun serviceAdded(event: ServiceEvent?) {
@@ -52,7 +53,7 @@ class ServicesManager(
             mDNSInstance.registerService(
                 ServiceInfo.create(
                     service.name,
-                    address.hostAddress,
+                    address?.hostAddress,
                     SERVER_SUB_TYPE,
                     serverData.port,
                     serverData.weight,
