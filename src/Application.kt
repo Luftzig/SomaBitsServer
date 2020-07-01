@@ -23,6 +23,8 @@ import io.ktor.routing.routing
 import io.ktor.util.cio.write
 import io.ktor.websocket.webSocket
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -74,6 +76,8 @@ fun Application.module(testing: Boolean = false) {
                 ServiceName(it) to AdvertiseServerData(defaultOscPort(), mapOf("server" to ""))
             })
 
+    val oscConnections: MutableMap<ServiceName, OscConnection> = mutableMapOf()
+
     routing {
         get("/") {
             call.respondText("HELLO WORLD!", contentType = ContentType.Text.Plain)
@@ -87,32 +91,61 @@ fun Application.module(testing: Boolean = false) {
             call.respond(servicesManager.services)
         }
 
-        get("/connect/{service}/{port}") {
+        get("/connect/{service}/{port?}") {
             val serviceName = call.parameters["service"]?.let { it1 -> ServiceName(it1) }
-            val result = servicesManager.services[serviceName]?.runCatching {
-                val socket = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp()
-                val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
-                val boundSocket = socket.connect(InetSocketAddress(address, handshakePort))
-                val bestAddress =
-                    getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(address).length }
-                boundSocket.openWriteChannel(autoFlush = true).write("${bestAddress?.hostName}\r\n")
-                boundSocket.close()
-                call.respond(StatusResponse("ok", "Sent address $bestAddress to $address:$handshakePort"))
-            }
-            when {
-                result == null -> call.respond(StatusResponse("failed", "Failed to find service '$serviceName'"))
-                result.isFailure -> call.respond(
-                    StatusResponse(
-                        "failed",
-                        "Failed to connect with service. Error: ${result.exceptionOrNull()}"
+            val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
+            val bitsService = servicesManager.services[serviceName]
+            if (bitsService != null) {
+                // We know that by know the server has at least one IP address
+                val bestMatchingServerAddress =
+                    getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsService.address).length }!!
+                kotlin.runCatching { sendServerIp(bitsService, handshakePort, bestMatchingServerAddress) }
+                    .fold({
+                        oscConnections[bitsService.name] = OscConnection(
+                            bestMatchingServerAddress,
+                            defaultOscPort(),
+                            InetAddress.getByName(bitsService.address),
+                            bitsService.port
+                        )
+                        log.debug("Connection established with $bitsService")
+                        call.respond(
+                            StatusResponse(
+                                "ok",
+                                "Sent address $bestMatchingServerAddress to ${bitsService.address}:$handshakePort"
+                            )
+                        )
+                    },
+                        {
+                            call.respond(
+                                StatusResponse(
+                                    "failed",
+                                    "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
+                                )
+                            )
+                        }
                     )
-                )
+            } else {
+                call.respond(StatusResponse("failed", "Failed to find service '$serviceName'"))
             }
-
         }
 
-        webSocket("/connect/{service}") {
-
+        webSocket("/connect/{service}/{pattern}") {
+            val serviceName = call.parameters["service"]?.let { it1 -> ServiceName(it1) }
+            val pattern = call.parameters["pattern"]
+            val connection = serviceName?.let { oscConnections[serviceName] }
+            pattern?.let { pattern ->
+                connection?.listenTo("/$pattern") {
+                    launch {
+                        send(Frame.Text("${it.time}: ${it.source}: ${it.message}"))
+                    }
+                }
+                while (true) {
+                    val frame = incoming.receive()
+                    if (frame is Frame.Text) {
+                        connection?.send("/$pattern", listOf(frame.readText()))
+                    }
+                }
+            }
         }
 
         webSocket("/bitsws/echo") {
@@ -125,6 +158,17 @@ fun Application.module(testing: Boolean = false) {
             }
         }
     }
+}
+
+private suspend fun sendServerIp(
+    bitsService: BitsService,
+    handshakePort: Int,
+    bestAddress: InetAddress?
+) {
+    val socket = aSocket(ActorSelectorManager(Dispatchers.IO)).tcp()
+    val boundSocket = socket.connect(InetSocketAddress(bitsService.address, handshakePort))
+    boundSocket.openWriteChannel(autoFlush = true).write("${bestAddress?.hostName}\r\n")
+    boundSocket.close()
 }
 
 private fun Application.defaultDiscoveryServices() =

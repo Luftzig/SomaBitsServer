@@ -100,10 +100,16 @@ fun main(arg: Array<String>) {
     }
 }
 
-data class BitsService(val address: String, val port: Int, val interfaces: List<Pair<String, String>>) {
+data class BitsService(
+    val name: ServiceName,
+    val address: String,
+    val port: Int,
+    val interfaces: List<Pair<String, String>>
+) {
     companion object {
         fun from(serviceInfo: ServiceInfo): BitsService =
             BitsService(
+                ServiceName(serviceInfo.name),
                 serviceInfo.hostAddresses.first(),
                 serviceInfo.port,
                 parseInterfaces(serviceInfo.textBytes)
