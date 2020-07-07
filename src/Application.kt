@@ -19,6 +19,7 @@ import io.ktor.network.sockets.openWriteChannel
 import io.ktor.response.respond
 import io.ktor.response.respondText
 import io.ktor.routing.get
+import io.ktor.routing.post
 import io.ktor.routing.routing
 import io.ktor.util.cio.write
 import io.ktor.websocket.webSocket
@@ -95,6 +96,7 @@ fun Application.module(testing: Boolean = false) {
             val serviceName = call.parameters["service"]?.let { it1 -> ServiceName(it1) }
             val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
             val bitsService = servicesManager.services[serviceName]
+            log.info("Initializing handshake with $serviceName:$handshakePort")
             if (bitsService != null) {
                 // We know that by know the server has at least one IP address
                 val bestMatchingServerAddress =
@@ -133,6 +135,7 @@ fun Application.module(testing: Boolean = false) {
             val serviceName = call.parameters["service"]?.let { it1 -> ServiceName(it1) }
             val pattern = call.parameters["pattern"]
             val connection = serviceName?.let { oscConnections[serviceName] }
+            log.info("starting OSC session with $serviceName:$pattern")
             pattern?.let { pattern ->
                 connection?.listenTo("/$pattern") {
                     launch {
