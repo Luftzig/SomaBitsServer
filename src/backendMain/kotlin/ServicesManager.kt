@@ -3,6 +3,7 @@ package se.kth.somabits.backend
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import org.slf4j.LoggerFactory
+import se.kth.somabits.common.BitsService
 import se.kth.somabits.common.ServiceName
 import java.net.InetAddress
 import javax.jmdns.*
@@ -114,48 +115,34 @@ fun main(arg: Array<String>) {
     }
 }
 
-/**
- * Represents a single Soma Bit and its interfaces. A Soma bit device is a service available at a specific network
- * address, with a discovery style name etc. 'Bit 1._osc._udp.local.'.
- * @property interfaces is a list local service address such as '/Motor1' and information regarding it.
- */
-data class BitsService(
-    val name: ServiceName,
-    val address: String,
-    val port: Int,
-    val interfaces: List<Pair<String, String>>
-) {
-    companion object {
-        fun from(serviceInfo: ServiceInfo): BitsService =
-            BitsService(
-                ServiceName(serviceInfo.name),
-                serviceInfo.hostAddresses.first(),
-                serviceInfo.port,
-                parseInterfaces(
-                    serviceInfo.textBytes
-                )
-            )
+fun BitsService.Companion.from(serviceInfo: ServiceInfo): BitsService =
+    BitsService(
+        ServiceName(serviceInfo.name),
+        serviceInfo.hostAddresses.first(),
+        serviceInfo.port,
+        parseInterfaces(
+            serviceInfo.textBytes
+        )
+    )
 
-        private fun parseInterfaces(textBytes: ByteArray?): List<Pair<String, String>> =
-            textBytes?.let {
-                parseBonjourTxtRecord(
-                    it
-                )
-            }.orEmpty()
+private fun parseInterfaces(textBytes: ByteArray?): List<Pair<String, String>> =
+    textBytes?.let {
+        parseBonjourTxtRecord(
+            it
+        )
+    }.orEmpty()
 
-        private fun parseBonjourTxtRecord(bytes: ByteArray): List<Pair<String, String>> =
-            bytes.toList().breakWith {
-                val length = it.first().toUShort().toInt()
-                Pair(it.drop(1).take(length), it.drop(length + 1))
-            }.map {
-                it.toByteArray().toString(Charsets.UTF_8)
-            }.map {
-                it.split("=")
-            }.map {
-                Pair(it.first(), it.drop(1).joinToString(""))
-            }
+private fun parseBonjourTxtRecord(bytes: ByteArray): List<Pair<String, String>> =
+    bytes.toList().breakWith {
+        val length = it.first().toUShort().toInt()
+        Pair(it.drop(1).take(length), it.drop(length + 1))
+    }.map {
+        it.toByteArray().toString(Charsets.UTF_8)
+    }.map {
+        it.split("=")
+    }.map {
+        Pair(it.first(), it.drop(1).joinToString(""))
     }
-}
 
 fun <T> List<T>.breakWith(selector: (List<T>) -> Pair<List<T>, List<T>>): List<List<T>> =
     if (this.isNotEmpty()) {

@@ -8,19 +8,16 @@ import io.ktor.features.ContentNegotiation
 import io.ktor.features.DataConversion
 import io.ktor.gson.gson
 import io.ktor.html.respondHtml
-import io.ktor.http.ContentType
 import io.ktor.http.cio.websocket.Frame
 import io.ktor.http.cio.websocket.pingPeriod
 import io.ktor.http.cio.websocket.readText
 import io.ktor.http.cio.websocket.timeout
 import io.ktor.http.content.resource
-import io.ktor.http.content.resources
 import io.ktor.http.content.static
 import io.ktor.network.selector.ActorSelectorManager
 import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.openWriteChannel
 import io.ktor.response.respond
-import io.ktor.response.respondText
 import io.ktor.routing.get
 import io.ktor.routing.routing
 import io.ktor.util.cio.write
@@ -28,9 +25,7 @@ import io.ktor.websocket.webSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.html.*
-import se.kth.somabits.common.ServiceName
-import se.kth.somabits.common.StatusResponse
-import se.kth.somabits.common.longestMatchingSubstring
+import se.kth.somabits.common.*
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
@@ -84,7 +79,7 @@ fun Application.module() {
                 }
                 body {
                     div {
-                        id = "js-response"
+                        id = "js-content"
                         +"Loading..."
                     }
                     script(src = "/static/somabits.js") {}
