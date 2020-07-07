@@ -1,16 +1,16 @@
-package se.kth.somabits
+package se.kth.somabits.backend
 
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import org.slf4j.LoggerFactory
+import se.kth.somabits.common.ServiceName
 import java.net.InetAddress
 import javax.jmdns.*
 import kotlin.system.exitProcess
 
-val OSC_SERVICE_TYPE = "_osc._udp.local."
+const val OSC_SERVICE_TYPE = "_osc._udp.local."
 
-
-val SERVER_SUB_TYPE = "_server"
+const val SERVER_SUB_TYPE = "_server"
 
 val log = LoggerFactory.getLogger(ServicesManager::class.qualifiedName)!!
 
@@ -35,7 +35,14 @@ class ServicesManager(
             mDNSInstance.addServiceListener(it.name, object : ServiceListener {
                 override fun serviceResolved(event: ServiceEvent?) {
                     log.debug("Service $it resolved on ${mDNSInstance.name}: $event")
-                    event?.run { services.put(ServiceName(event.name), BitsService.from(event.info)) }
+                    event?.run {
+                        services.put(
+                            ServiceName(
+                                event.name
+                            ),
+                            BitsService.from(event.info)
+                        )
+                    }
                 }
 
                 override fun serviceRemoved(event: ServiceEvent?) {
@@ -45,7 +52,14 @@ class ServicesManager(
 
                 override fun serviceAdded(event: ServiceEvent?) {
                     log.debug("Service $it added on ${mDNSInstance.name}: $event")
-                    event?.run { services.putIfAbsent(ServiceName(event.name), BitsService.from(event.info)) }
+                    event?.run {
+                        services.putIfAbsent(
+                            ServiceName(
+                                event.name
+                            ),
+                            BitsService.from(event.info)
+                        )
+                    }
                 }
             })
         }
@@ -100,6 +114,11 @@ fun main(arg: Array<String>) {
     }
 }
 
+/**
+ * Represents a single Soma Bit and its interfaces. A Soma bit device is a service available at a specific network
+ * address, with a discovery style name etc. 'Bit 1._osc._udp.local.'.
+ * @property interfaces is a list local service address such as '/Motor1' and information regarding it.
+ */
 data class BitsService(
     val name: ServiceName,
     val address: String,
@@ -112,11 +131,17 @@ data class BitsService(
                 ServiceName(serviceInfo.name),
                 serviceInfo.hostAddresses.first(),
                 serviceInfo.port,
-                parseInterfaces(serviceInfo.textBytes)
+                parseInterfaces(
+                    serviceInfo.textBytes
+                )
             )
 
         private fun parseInterfaces(textBytes: ByteArray?): List<Pair<String, String>> =
-            textBytes?.let { parseBonjourTxtRecord(it) }.orEmpty()
+            textBytes?.let {
+                parseBonjourTxtRecord(
+                    it
+                )
+            }.orEmpty()
 
         private fun parseBonjourTxtRecord(bytes: ByteArray): List<Pair<String, String>> =
             bytes.toList().breakWith {
