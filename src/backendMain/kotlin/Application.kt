@@ -75,11 +75,11 @@ fun Application.module() {
         get("/") {
             call.respondHtml {
                 head {
-                    title("Hello from Ktor!")
+                    title("Somabits Server")
                 }
                 body {
                     div {
-                        id = "js-content"
+                        id = "root"
                         +"Loading..."
                     }
                     script(src = "/static/somabits.js") {}
