@@ -69,15 +69,51 @@ suspend fun main() {
             .launchIn(this)
     }
     render {
-        div {
-            div() {}
-            h1 { text("Somabits Server") }
-            div {
-                h3 { text("server IP(s)") }
-                addressStore.data.each().map { addr ->
-                    println("Address: $addr")
-                    render { code { text(addr) } }
-                }.bind()
+        div("container") {
+            div("col-md-12") {
+                div("row") {
+                    h1("col-md-8") { text("Somabits Server") }
+                    div("col-md-4") {
+                        div("row") {
+                            h4 { text("server IP(s)") }
+                        }
+                        div("row") {
+                            addressStore.data.each().map { addr ->
+                                render { code("col-sm-6") { text(addr) } }
+                            }.bind()
+                        }
+                    }
+                }
+            }
+
+            div("row") {
+                div("col-md-12") {
+                    table("table") {
+                        caption { text("Known devices") }
+                        thead {
+                            tr {
+                                th { text("Name") }
+                                th { text("Address") }
+                                th { text("Interfaces") }
+                            }
+                        }
+                        tbody {
+                            devicesStore.data.each().map { device: BitsService ->
+                                render {
+                                    tr {
+                                        td { text(device.name.name) }
+                                        td { text("${device.address}:${device.port}") }
+                                        td {
+                                            text(device.interfaces.map {
+                                                "${it.first} -> ${it.second}"
+                                            }.joinToString(", "))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }.mount("root")

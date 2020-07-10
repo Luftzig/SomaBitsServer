@@ -1,9 +1,6 @@
 package se.kth.somabits.backend
 
-import io.ktor.application.Application
-import io.ktor.application.call
-import io.ktor.application.install
-import io.ktor.application.log
+import io.ktor.application.*
 import io.ktor.features.ContentNegotiation
 import io.ktor.features.DataConversion
 import io.ktor.gson.gson
@@ -75,6 +72,17 @@ fun Application.module() {
         get("/") {
             call.respondHtml {
                 head {
+                    link(
+                        rel = "stylesheet",
+                        href = "https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css"
+                    ) {
+                        attributes.put(
+                            "integrity",
+                            "sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk"
+                        )
+                        attributes.put("crossorigin", "anonymous")
+                    }
+
                     title("Somabits Server")
                 }
                 body {
