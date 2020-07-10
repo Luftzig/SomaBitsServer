@@ -105,6 +105,11 @@ kotlin {
     }
 }
 
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    kotlinOptions.freeCompilerArgs = ["-Xallow-result-return-type"]
+}
+
+
 task run(type: JavaExec, dependsOn: [backendJar]) {
     main = "se.kth.somabits.backend.ApplicationKt"
     classpath(configurations.backendRuntimeClasspath, backendJar)

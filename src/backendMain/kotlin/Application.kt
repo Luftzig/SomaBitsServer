@@ -18,6 +18,7 @@ import io.ktor.response.respond
 import io.ktor.routing.get
 import io.ktor.routing.routing
 import io.ktor.util.cio.write
+import io.ktor.util.pipeline.PipelineContext
 import io.ktor.websocket.webSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -116,43 +117,28 @@ fun Application.module() {
             }
             val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
             val bitsService = servicesManager.services[serviceName]
+            val oscPort = defaultOscPort()
             log.info("Initializing handshake with $serviceName:$handshakePort")
             if (bitsService != null) {
                 // We know that by know the server has at least one IP address
-                val bestMatchingServerAddress =
-                    getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsService.address).length }!!
-                kotlin.runCatching {
-                    sendServerIp(
-                        bitsService,
-                        handshakePort,
-                        bestMatchingServerAddress
-                    )
-                }
-                    .fold({
-                        oscConnections[bitsService.name] =
-                            OscConnection(
-                                bestMatchingServerAddress,
-                                defaultOscPort(),
-                                InetAddress.getByName(bitsService.address),
-                                bitsService.port
-                            )
+                connectToService(bitsService, handshakePort, oscPort, oscConnections)
+                    .onSuccess { serverAddressUsed ->
                         log.debug("Connection established with $bitsService")
                         call.respond(
                             StatusResponse(
                                 "ok",
-                                "Sent address $bestMatchingServerAddress to ${bitsService.address}:$handshakePort"
+                                "Sent address $serverAddressUsed to ${bitsService.address}:$handshakePort"
                             )
                         )
-                    },
-                        {
-                            call.respond(
-                                StatusResponse(
-                                    "failed",
-                                    "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
-                                )
+                    }
+                    .onFailure {
+                        call.respond(
+                            StatusResponse(
+                                "failed",
+                                "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
                             )
-                        }
-                    )
+                        )
+                    }
             } else {
                 call.respond(
                     StatusResponse(
@@ -170,7 +156,20 @@ fun Application.module() {
                 )
             }
             val pattern = call.parameters["pattern"]
-            val connection = serviceName?.let { oscConnections[serviceName] }
+            // Get connection or try to establish new one
+            val connection = serviceName?.let {
+                if (it in oscConnections) {
+                    oscConnections[serviceName]
+                } else {
+                    val bitsService = servicesManager.services[serviceName]
+                    val oscPort = defaultOscPort()
+                    bitsService?.let { it1 ->
+                        connectToService(it1, defaultHandshakePort(), oscPort, oscConnections)
+                            .map { oscConnections[serviceName] }
+                            .getOrNull()
+                    }
+                }
+            }
             log.info("starting OSC session with $serviceName:$pattern")
             pattern?.let { pattern ->
                 connection?.listenTo("/$pattern") {
@@ -197,6 +196,41 @@ fun Application.module() {
             }
         }
     }
+}
+
+private suspend fun connectToService(
+    bitsService: BitsService,
+    handshakePort: Int,
+    oscPort: Int,
+    oscConnections: MutableMap<ServiceName, OscConnection>
+): Result<InetAddress> {
+    val bestMatchingServerAddress =
+        getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsService.address).length }!!
+    return runCatching {
+        sendServerIp(
+            bitsService,
+            handshakePort,
+            bestMatchingServerAddress
+        )
+        bestMatchingServerAddress
+    }.onSuccess {
+        registerService(oscConnections, bitsService, bestMatchingServerAddress, oscPort)
+    }
+}
+
+private fun registerService(
+    oscConnections: MutableMap<ServiceName, OscConnection>,
+    bitsService: BitsService,
+    bestMatchingServerAddress: InetAddress,
+    connectionPort: Int
+) {
+    oscConnections[bitsService.name] =
+        OscConnection(
+            bestMatchingServerAddress,
+            connectionPort,
+            InetAddress.getByName(bitsService.address),
+            bitsService.port
+        )
 }
 
 private suspend fun sendServerIp(
