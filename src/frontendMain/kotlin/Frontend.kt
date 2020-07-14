@@ -17,6 +17,8 @@ import kotlinx.serialization.builtins.*
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
+import org.w3c.dom.MessageEvent
+import org.w3c.dom.WebSocket
 import se.kth.somabits.common.BitsService
 
 @ImplicitReflectionSerializer
@@ -43,8 +45,8 @@ suspend fun main() {
             endpoint.get().onErrorLog()
                 .body()
                 .map { value ->
-                    Json.parse(MapSerializer(String.serializer(), BitsService::class.serializer()), value)
-                        .values
+                    val parsed = Json.parse(MapSerializer(String.serializer(), BitsService::class.serializer()), value)
+                    parsed.values
                         .toList()
                 }
         } andThen update
@@ -61,13 +63,33 @@ suspend fun main() {
         }
     }
     GlobalScope.launch {
-        addressStore.start
-            .onCompletion { println("Done") }
-            .launchIn(this)
+        val initial = flowOf<Unit>()
+                    .onCompletion { println("Done")}
+        initial handledBy addressStore.loadAddresses
+        initial.launchIn(this)
         devicesStore.timer
             .onEach { println("Got devices") }
             .launchIn(this)
     }
+//    val deviceConnection = object : RootStore<String>("") {
+//        val connection = flow<String> {
+//            val socket = WebSocket("/connect/service/pattern")
+//            socket.onopen = {
+//                println("Connected")
+//            }
+//            socket.onerror = {
+//                println("Connection failed")
+//            }
+//            socket.onmessage = { message: MessageEvent ->
+//                suspend {
+//                    this.emit("${message.type}: ${message.data}")
+//                }
+//            }
+//            launch {
+//                this.collect { socket.send(it) }
+//            }
+//        }
+//    }
     render {
         div("container") {
             div("col-md-12") {
@@ -110,7 +132,7 @@ suspend fun main() {
                                         }
                                     }
                                 }
-                            }
+                            }.bind()
                         }
                     }
                 }

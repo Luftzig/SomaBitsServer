@@ -77,6 +77,8 @@ kotlin {
                 implementation "com.illposed.osc:javaosc-core:0.7"
                 implementation "io.ktor:ktor-html-builder:$ktor_version"
                 implementation "org.jetbrains.kotlinx:kotlinx-serialization-runtime:$serialization_version"
+                implementation "io.arrow-kt:arrow-core:$arrow_version"
+                implementation "io.arrow-kt:arrow-syntax:$arrow_version"
             }
         }
         backendTest {

@@ -1,5 +1,7 @@
 package se.kth.somabits.backend
 
+import arrow.core.Either
+import arrow.core.getOrHandle
 import io.ktor.application.*
 import io.ktor.features.ContentNegotiation
 import io.ktor.features.DataConversion
@@ -17,6 +19,8 @@ import io.ktor.network.sockets.openWriteChannel
 import io.ktor.response.respond
 import io.ktor.routing.get
 import io.ktor.routing.routing
+import io.ktor.serialization.json
+import io.ktor.serialization.serialization
 import io.ktor.util.cio.write
 import io.ktor.util.pipeline.PipelineContext
 import io.ktor.websocket.webSocket
@@ -50,10 +54,7 @@ fun Application.module() {
     }
 
     install(ContentNegotiation) {
-        gson {
-            setDateFormat(DateFormat.LONG)
-            setPrettyPrinting()
-        }
+        serialization()
     }
 
     val servicesManager =
@@ -122,22 +123,26 @@ fun Application.module() {
             if (bitsService != null) {
                 // We know that by know the server has at least one IP address
                 connectToService(bitsService, handshakePort, oscPort, oscConnections)
-                    .onSuccess { serverAddressUsed ->
+                    .map { serverAddressUsed ->
                         log.debug("Connection established with $bitsService")
-                        call.respond(
-                            StatusResponse(
-                                "ok",
-                                "Sent address $serverAddressUsed to ${bitsService.address}:$handshakePort"
+                        launch {
+                            call.respond(
+                                StatusResponse(
+                                    "ok",
+                                    "Sent address $serverAddressUsed to ${bitsService.address}:$handshakePort"
+                                )
                             )
-                        )
+                        }
                     }
-                    .onFailure {
-                        call.respond(
-                            StatusResponse(
-                                "failed",
-                                "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
+                    .mapLeft {
+                        launch {
+                            call.respond(
+                                StatusResponse(
+                                    "failed",
+                                    "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
+                                )
                             )
-                        )
+                        }
                     }
             } else {
                 call.respond(
@@ -166,7 +171,10 @@ fun Application.module() {
                     bitsService?.let { it1 ->
                         connectToService(it1, defaultHandshakePort(), oscPort, oscConnections)
                             .map { oscConnections[serviceName] }
-                            .getOrNull()
+                            .getOrHandle {
+                                log.debug("Failed to retrieve OSC connection due to: $it")
+                                null
+                            }
                     }
                 }
             }
@@ -203,18 +211,21 @@ private suspend fun connectToService(
     handshakePort: Int,
     oscPort: Int,
     oscConnections: MutableMap<ServiceName, OscConnection>
-): Result<InetAddress> {
+): Either<Throwable, InetAddress> {
     val bestMatchingServerAddress =
         getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsService.address).length }!!
-    return runCatching {
+    return Either.catch {
         sendServerIp(
             bitsService,
             handshakePort,
             bestMatchingServerAddress
         )
         bestMatchingServerAddress
-    }.onSuccess {
-        registerService(oscConnections, bitsService, bestMatchingServerAddress, oscPort)
+    }.also {
+        when (it) {
+            is Either.Right ->
+                registerService(oscConnections, bitsService, bestMatchingServerAddress, oscPort)
+        }
     }
 }
 

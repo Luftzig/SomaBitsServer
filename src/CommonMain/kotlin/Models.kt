@@ -5,17 +5,19 @@ import kotlinx.serialization.*
 /**
  * Wrapper to a mDNS style service name
  */
-inline class ServiceName(val name: String)
+@Serializable
+class ServiceName(val name: String) {
+    @Serializer(forClass = ServiceName::class)
+    companion object : KSerializer<ServiceName> {
+        override val descriptor: SerialDescriptor
+            get() = PrimitiveDescriptor("ServiceName", PrimitiveKind.STRING)
 
-class ServiceNameSerializer : KSerializer<ServiceName> {
-    override val descriptor: SerialDescriptor
-        get() = PrimitiveDescriptor("ServiceName", PrimitiveKind.STRING)
+        override fun deserialize(decoder: Decoder): ServiceName =
+            ServiceName(decoder.decodeString())
 
-    override fun deserialize(decoder: Decoder): ServiceName =
-        ServiceName(decoder.decodeString())
-
-    override fun serialize(encoder: Encoder, value: ServiceName) {
-        encoder.encodeString(value.name)
+        override fun serialize(encoder: Encoder, value: ServiceName) {
+            encoder.encodeString(value.name)
+        }
     }
 }
 
@@ -27,7 +29,6 @@ class ServiceNameSerializer : KSerializer<ServiceName> {
  */
 @Serializable
 data class BitsService(
-    @Serializable(with = ServiceNameSerializer::class)
     val name: ServiceName,
     val address: String,
     val port: Int,
