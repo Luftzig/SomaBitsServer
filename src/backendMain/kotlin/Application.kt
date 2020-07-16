@@ -1,16 +1,11 @@
 package se.kth.somabits.backend
 
-import arrow.core.Either
-import arrow.core.getOrHandle
+import arrow.core.*
 import io.ktor.application.*
 import io.ktor.features.ContentNegotiation
 import io.ktor.features.DataConversion
-import io.ktor.gson.gson
 import io.ktor.html.respondHtml
-import io.ktor.http.cio.websocket.Frame
-import io.ktor.http.cio.websocket.pingPeriod
-import io.ktor.http.cio.websocket.readText
-import io.ktor.http.cio.websocket.timeout
+import io.ktor.http.cio.websocket.*
 import io.ktor.http.content.resource
 import io.ktor.http.content.static
 import io.ktor.network.selector.ActorSelectorManager
@@ -19,10 +14,8 @@ import io.ktor.network.sockets.openWriteChannel
 import io.ktor.response.respond
 import io.ktor.routing.get
 import io.ktor.routing.routing
-import io.ktor.serialization.json
 import io.ktor.serialization.serialization
 import io.ktor.util.cio.write
-import io.ktor.util.pipeline.PipelineContext
 import io.ktor.websocket.webSocket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -31,7 +24,6 @@ import se.kth.somabits.common.*
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
-import java.text.DateFormat
 import java.time.Duration
 
 fun main(args: Array<String>): Unit = io.ktor.server.netty.EngineMain.main(args)
@@ -63,7 +55,7 @@ fun Application.module() {
             defaultDiscoveryServices().map { ServiceName(it) },
             defaultDiscoveryServices().associate {
                 ServiceName(it) to AdvertiseServerData(
-                    defaultOscPort(),
+                    defaultServerOscListeningPort(),
                     mapOf("server" to "")
                 )
             })
@@ -118,7 +110,7 @@ fun Application.module() {
             }
             val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
             val bitsService = servicesManager.services[serviceName]
-            val oscPort = defaultOscPort()
+            val oscPort = defaultServerOscListeningPort()
             log.info("Initializing handshake with $serviceName:$handshakePort")
             if (bitsService != null) {
                 // We know that by know the server has at least one IP address
@@ -154,42 +146,35 @@ fun Application.module() {
             }
         }
 
-        webSocket("/connect/{service}/{pattern}") {
+        webSocket("/ws/connect/{service}/{pattern}") {
+            log.info("Create websocket channel with ${call.parameters}")
             val serviceName = call.parameters["service"]?.let { it1 ->
                 ServiceName(
                     it1
                 )
             }
             val pattern = call.parameters["pattern"]
-            // Get connection or try to establish new one
-            val connection = serviceName?.let {
-                if (it in oscConnections) {
-                    oscConnections[serviceName]
-                } else {
-                    val bitsService = servicesManager.services[serviceName]
-                    val oscPort = defaultOscPort()
-                    bitsService?.let { it1 ->
-                        connectToService(it1, defaultHandshakePort(), oscPort, oscConnections)
-                            .map { oscConnections[serviceName] }
-                            .getOrHandle {
-                                log.debug("Failed to retrieve OSC connection due to: $it")
-                                null
-                            }
-                    }
+            if (serviceName == null || pattern == null) {
+                close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Missing arguments"))
+                return@webSocket
+            }
+            val connection = oscConnections[serviceName] ?: createNewConnection(
+                serviceName,
+                servicesManager.services,
+                oscConnections
+            )
+            log.info("starting OSC session with ${serviceName?.name}:$pattern")
+            send("Stream started")
+            connection?.listenTo("/$pattern") {
+                log.debug("Received message on connection ${serviceName?.name}/${pattern}")
+                launch {
+                    send(Frame.Text("${it.time}: ${it.source}: ${it.message}"))
                 }
             }
-            log.info("starting OSC session with $serviceName:$pattern")
-            pattern?.let { pattern ->
-                connection?.listenTo("/$pattern") {
-                    launch {
-                        send(Frame.Text("${it.time}: ${it.source}: ${it.message}"))
-                    }
-                }
-                while (true) {
-                    val frame = incoming.receive()
-                    if (frame is Frame.Text) {
-                        connection?.send("/$pattern", listOf(frame.readText()))
-                    }
+            while (true) {
+                val frame = incoming.receive()
+                if (frame is Frame.Text) {
+                    connection?.send("/$pattern", listOf(frame.readText()))
                 }
             }
         }
@@ -206,14 +191,37 @@ fun Application.module() {
     }
 }
 
+private suspend fun Application.createNewConnection(
+    serviceName: ServiceName,
+    services: Map<ServiceName, BitsService>,
+    oscConnections: MutableMap<ServiceName, OscConnection>
+): OscConnection? {
+    log.info("Creating new connection to ${serviceName.name}")
+    val bitsService = services[serviceName]
+    val oscPort = defaultServerOscListeningPort()
+    val result = bitsService?.let { connectToService(it, defaultHandshakePort(), oscPort, oscConnections) }
+    return when (result) {
+        is Either.Right -> oscConnections[serviceName]
+        is Either.Left -> {
+            log.warn("Failed to retrieve OSC connection due to: ${result.a}")
+            null
+        }
+        else -> {
+            log.warn("No service by the name ${serviceName.name} was found")
+            null
+        }
+    }
+}
+
 private suspend fun connectToService(
     bitsService: BitsService,
     handshakePort: Int,
-    oscPort: Int,
+    serverOscListeningPort: Int,
     oscConnections: MutableMap<ServiceName, OscConnection>
 ): Either<Throwable, InetAddress> {
     val bestMatchingServerAddress =
         getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsService.address).length }!!
+    registerService(oscConnections, bitsService, bestMatchingServerAddress, serverOscListeningPort)
     return Either.catch {
         sendServerIp(
             bitsService,
@@ -221,11 +229,6 @@ private suspend fun connectToService(
             bestMatchingServerAddress
         )
         bestMatchingServerAddress
-    }.also {
-        when (it) {
-            is Either.Right ->
-                registerService(oscConnections, bitsService, bestMatchingServerAddress, oscPort)
-        }
     }
 }
 
@@ -233,12 +236,12 @@ private fun registerService(
     oscConnections: MutableMap<ServiceName, OscConnection>,
     bitsService: BitsService,
     bestMatchingServerAddress: InetAddress,
-    connectionPort: Int
+    serverListeningPort: Int
 ) {
     oscConnections[bitsService.name] =
         OscConnection(
             bestMatchingServerAddress,
-            connectionPort,
+            serverListeningPort,
             InetAddress.getByName(bitsService.address),
             bitsService.port
         )
@@ -255,6 +258,7 @@ private suspend fun sendServerIp(
         )
     ).tcp()
     val boundSocket = socket.connect(InetSocketAddress(bitsService.address, handshakePort))
+    log.debug("Sending server IP $bestAddress to device ${bitsService.name}")
     boundSocket.openWriteChannel(autoFlush = true).write("${bestAddress?.hostName}\r\n")
     boundSocket.close()
 }
@@ -262,8 +266,8 @@ private suspend fun sendServerIp(
 private fun Application.defaultDiscoveryServices() =
     environment.config.property("ktor.application.defaultDiscoveryServices").getList()
 
-private fun Application.defaultOscPort(): Int =
-    environment.config.property("ktor.application.defaultOscPort").getString().toInt()
+private fun Application.defaultServerOscListeningPort(): Int =
+    environment.config.property("ktor.application.defaultOscListeningPort").getString().toInt()
 
 private fun Application.defaultHandshakePort(): Int =
     environment.config.property("ktor.application.defaultHandshakePort").getString().toInt()

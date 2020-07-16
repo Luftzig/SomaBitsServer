@@ -6,7 +6,7 @@ import kotlinx.serialization.*
  * Wrapper to a mDNS style service name
  */
 @Serializable
-class ServiceName(val name: String) {
+data class ServiceName(val name: String) {
     @Serializer(forClass = ServiceName::class)
     companion object : KSerializer<ServiceName> {
         override val descriptor: SerialDescriptor
