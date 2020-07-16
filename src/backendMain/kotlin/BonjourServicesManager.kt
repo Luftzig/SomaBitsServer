@@ -3,17 +3,19 @@ package se.kth.somabits.backend
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import org.slf4j.LoggerFactory
-import se.kth.somabits.common.BitsService
+import se.kth.somabits.common.BitsDevice
+import se.kth.somabits.common.BitsInterface
+import se.kth.somabits.common.BitsInterfaceType
 import se.kth.somabits.common.ServiceName
 import java.net.InetAddress
 import javax.jmdns.*
 import kotlin.system.exitProcess
 
-const val OSC_SERVICE_TYPE = "_osc._udp.local."
+const val SOMA_BITS_BONJOUR_SERVICE_NAME = "_osc._udp.local."
 
 const val SERVER_SUB_TYPE = "_server"
 
-val log = LoggerFactory.getLogger(ServicesManager::class.qualifiedName)!!
+val log = LoggerFactory.getLogger(BonjourServicesManager::class.qualifiedName)!!
 
 data class AdvertiseServerData(
     val port: Int,
@@ -22,13 +24,13 @@ data class AdvertiseServerData(
     val priority: Int = 0
 )
 
-class ServicesManager(
+class BonjourServicesManager(
     val address: InetAddress?,
     val servicesToUse: Iterable<ServiceName>,
     val advertiseServers: Map<ServiceName, AdvertiseServerData>
 ) {
     val mDNSInstance: JmDNS = JmDNS.create(address)
-    val services: MutableMap<ServiceName, BitsService> = mutableMapOf()
+    val services: MutableMap<ServiceName, BitsDevice> = mutableMapOf()
 
     init {
         log.debug("Starting listeners for $servicesToUse on $address")
@@ -41,14 +43,14 @@ class ServicesManager(
                             ServiceName(
                                 event.name
                             ),
-                            BitsService.from(event.info)
+                            BitsDevice.from(event.info)
                         )
                     }
                 }
 
                 override fun serviceRemoved(event: ServiceEvent?) {
                     log.debug("Service $it removed on ${mDNSInstance.name}: $event")
-//                    event?.run { services.remove(ServiceName(event.name)) }
+                    event?.run { services.remove(ServiceName(event.name)) }
                 }
 
                 override fun serviceAdded(event: ServiceEvent?) {
@@ -58,7 +60,7 @@ class ServicesManager(
                             ServiceName(
                                 event.name
                             ),
-                            BitsService.from(event.info)
+                            BitsDevice.from(event.info)
                         )
                     }
                 }
@@ -84,7 +86,7 @@ fun main(arg: Array<String>) {
     val loggerContext = LoggerFactory.getILoggerFactory() as LoggerContext
     loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).level = Level.INFO
     val jmDnsInstance = JmDNS.create()
-    jmDnsInstance.addServiceListener(OSC_SERVICE_TYPE, object : ServiceListener {
+    jmDnsInstance.addServiceListener(SOMA_BITS_BONJOUR_SERVICE_NAME, object : ServiceListener {
         override fun serviceResolved(event: ServiceEvent?) {
 //            println("Resolved: $event")
         }
@@ -102,11 +104,11 @@ fun main(arg: Array<String>) {
         val line = readLine()?.split(" ")
         when (line?.first()) {
             "q", "quit" -> exitProcess(0)
-            "l", "list" -> println(jmDnsInstance.list(OSC_SERVICE_TYPE))
+            "l", "list" -> println(jmDnsInstance.list(SOMA_BITS_BONJOUR_SERVICE_NAME))
             "p", "print" -> if (line.size > 1) {
                 val serviceName = line.drop(1).joinToString(" ")
                 println("$serviceName:")
-                val serviceInfo = jmDnsInstance.getServiceInfo(OSC_SERVICE_TYPE, serviceName)
+                val serviceInfo = jmDnsInstance.getServiceInfo(SOMA_BITS_BONJOUR_SERVICE_NAME, serviceName)
                 println(serviceInfo.hostAddresses.joinToString(", "))
                 println(serviceInfo.port)
                 println(serviceInfo.niceTextString)
@@ -115,8 +117,8 @@ fun main(arg: Array<String>) {
     }
 }
 
-fun BitsService.Companion.from(serviceInfo: ServiceInfo): BitsService =
-    BitsService(
+fun BitsDevice.Companion.from(serviceInfo: ServiceInfo): BitsDevice =
+    BitsDevice(
         ServiceName(serviceInfo.name),
         serviceInfo.hostAddresses.first(),
         serviceInfo.port,
@@ -125,12 +127,41 @@ fun BitsService.Companion.from(serviceInfo: ServiceInfo): BitsService =
         )
     )
 
-private fun parseInterfaces(textBytes: ByteArray?): List<Pair<String, String>> =
+private fun parseInterfaces(textBytes: ByteArray?): List<BitsInterface> =
     textBytes?.let {
         parseBonjourTxtRecord(
             it
         )
-    }.orEmpty()
+    }
+        .orEmpty()
+        .map {
+            BitsInterface(
+                type = extractInterfaceType(it.first),
+                id = extractInterfaceId(it.first),
+                oscPattern = extractInterfaceChannel(it.second),
+                range = extractInterfaceRange(it.second)
+            )
+        }
+
+fun extractInterfaceRange(value: String): Pair<Int, Int>? =
+    value.split(":")
+        .getOrNull(1)
+        ?.split("%")
+        ?.take(2)
+        ?.mapNotNull { it.toIntOrNull() }
+        ?.let { Pair(it[0], it[1]) }
+
+
+fun extractInterfaceChannel(value: String): String = value.split(":").firstOrNull() ?: "N/A"
+
+fun extractInterfaceId(key: String): String =
+    Regex("\\d+$").find(key)?.value ?: "N/A"
+
+fun extractInterfaceType(key: String): BitsInterfaceType = when {
+    key.toLowerCase().startsWith("sensor") -> BitsInterfaceType.Sensor
+    key.toLowerCase().startsWith("actuator") -> BitsInterfaceType.Actuator
+    else -> BitsInterfaceType.Unknown
+}
 
 private fun parseBonjourTxtRecord(bytes: ByteArray): List<Pair<String, String>> =
     bytes.toList().breakWith {

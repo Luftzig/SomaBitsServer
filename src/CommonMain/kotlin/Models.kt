@@ -21,6 +21,19 @@ data class ServiceName(val name: String) {
     }
 }
 
+enum class BitsInterfaceType {
+    Unknown,
+    Sensor,
+    Actuator
+}
+
+@Serializable
+data class BitsInterface(
+    val type: BitsInterfaceType,
+    val id: String,
+    val oscPattern: String,
+    val range: Pair<Int, Int>?
+)
 
 /**
  * Represents a single Soma Bit and its interfaces. A Soma bit device is a service available at a specific network
@@ -28,11 +41,11 @@ data class ServiceName(val name: String) {
  * @property interfaces is a list local service address such as '/Motor1' and information regarding it.
  */
 @Serializable
-data class BitsService(
+data class BitsDevice(
     val name: ServiceName,
     val address: String,
     val port: Int,
-    val interfaces: List<Pair<String, String>>
+    val interfaces: List<BitsInterface>
 ) {
     companion object {}
 }

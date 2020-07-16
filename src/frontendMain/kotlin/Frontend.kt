@@ -17,8 +17,7 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.w3c.dom.Element
-import org.w3c.dom.url.URL
-import se.kth.somabits.common.BitsService
+import se.kth.somabits.common.BitsDevice
 import kotlin.browser.window
 
 const val devicesSampleRateMs: Long = 5000
@@ -46,14 +45,14 @@ suspend fun main() {
             start.handledBy(loadAddresses)
         }
     }
-    val devicesStore = object : RootStore<List<BitsService>>(emptyList(), id = "bits") {
+    val devicesStore = object : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
         val endpoint = remote("/discover").acceptJson().header("Content-Type", "application/json")
 
-        val loadDevices = apply<Unit, List<BitsService>> {
+        val loadDevices = apply<Unit, List<BitsDevice>> {
             endpoint.get().onErrorLog()
                 .body()
                 .map { value ->
-                    val parsed = Json.parse(MapSerializer(String.serializer(), BitsService::class.serializer()), value)
+                    val parsed = Json.parse(MapSerializer(String.serializer(), BitsDevice::class.serializer()), value)
                     parsed.values
                         .toList()
                 }
@@ -133,24 +132,24 @@ class ConnectionsStore : RootStore<Map<String, WebSocketConnection>>(emptyMap())
     }
 }
 
-private fun interfaceLine(messagesStore: ConnectionsStore): (BitsService) -> Tag<Element> =
-    { device: BitsService ->
+private fun interfaceLine(messagesStore: ConnectionsStore): (BitsDevice) -> Tag<Element> =
+    { device: BitsDevice ->
         render {
             tr {
                 td { text(device.name.name) }
                 td { text("${device.address}:${device.port}") }
                 td {
-                    text(device.interfaces.map {
-                        "${it.first} -> ${it.second}"
-                    }.joinToString(", "))
+                    text(device.interfaces.groupBy { it.type }.map {
+                        "${it.key.name}: ${it.value.map {io -> "${io.id}: ${io.oscPattern}"}.joinToString(", ")}"
+                    }.joinToString("; "))
                 }
                 td {
                     device.interfaces.map { io ->
                         button {
                             clicks.map {
-                                "ws/connect/${device.name.name}/${io.first}"
+                                "ws/connect/${device.name.name}/${io.oscPattern}"
                             } handledBy messagesStore.toggle
-                            text(io.first)
+                            text(io.oscPattern)
                         }
                     }
                 }

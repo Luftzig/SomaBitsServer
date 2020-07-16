@@ -13,6 +13,7 @@ import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.openWriteChannel
 import io.ktor.response.respond
 import io.ktor.routing.get
+import io.ktor.routing.route
 import io.ktor.routing.routing
 import io.ktor.serialization.serialization
 import io.ktor.util.cio.write
@@ -50,7 +51,7 @@ fun Application.module() {
     }
 
     val servicesManager =
-        ServicesManager(
+        BonjourServicesManager(
             null,
             defaultDiscoveryServices().map { ServiceName(it) },
             defaultDiscoveryServices().associate {
@@ -100,6 +101,13 @@ fun Application.module() {
 
         get("/discover") {
             call.respond(servicesManager.services)
+        }
+
+        route("/device") {
+            get {
+                call.respond(servicesManager.services)
+            }
+
         }
 
         get("/connect/{service}/{port?}") {
@@ -193,7 +201,7 @@ fun Application.module() {
 
 private suspend fun Application.createNewConnection(
     serviceName: ServiceName,
-    services: Map<ServiceName, BitsService>,
+    services: Map<ServiceName, BitsDevice>,
     oscConnections: MutableMap<ServiceName, OscConnection>
 ): OscConnection? {
     log.info("Creating new connection to ${serviceName.name}")
@@ -214,17 +222,17 @@ private suspend fun Application.createNewConnection(
 }
 
 private suspend fun connectToService(
-    bitsService: BitsService,
+    bitsDevice: BitsDevice,
     handshakePort: Int,
     serverOscListeningPort: Int,
     oscConnections: MutableMap<ServiceName, OscConnection>
 ): Either<Throwable, InetAddress> {
     val bestMatchingServerAddress =
-        getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsService.address).length }!!
-    registerService(oscConnections, bitsService, bestMatchingServerAddress, serverOscListeningPort)
+        getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsDevice.address).length }!!
+    registerService(oscConnections, bitsDevice, bestMatchingServerAddress, serverOscListeningPort)
     return Either.catch {
         sendServerIp(
-            bitsService,
+            bitsDevice,
             handshakePort,
             bestMatchingServerAddress
         )
@@ -234,21 +242,21 @@ private suspend fun connectToService(
 
 private fun registerService(
     oscConnections: MutableMap<ServiceName, OscConnection>,
-    bitsService: BitsService,
+    bitsDevice: BitsDevice,
     bestMatchingServerAddress: InetAddress,
     serverListeningPort: Int
 ) {
-    oscConnections[bitsService.name] =
+    oscConnections[bitsDevice.name] =
         OscConnection(
             bestMatchingServerAddress,
             serverListeningPort,
-            InetAddress.getByName(bitsService.address),
-            bitsService.port
+            InetAddress.getByName(bitsDevice.address),
+            bitsDevice.port
         )
 }
 
 private suspend fun sendServerIp(
-    bitsService: BitsService,
+    bitsDevice: BitsDevice,
     handshakePort: Int,
     bestAddress: InetAddress?
 ) {
@@ -257,8 +265,8 @@ private suspend fun sendServerIp(
             Dispatchers.IO
         )
     ).tcp()
-    val boundSocket = socket.connect(InetSocketAddress(bitsService.address, handshakePort))
-    log.debug("Sending server IP $bestAddress to device ${bitsService.name}")
+    val boundSocket = socket.connect(InetSocketAddress(bitsDevice.address, handshakePort))
+    log.debug("Sending server IP $bestAddress to device ${bitsDevice.name}")
     boundSocket.openWriteChannel(autoFlush = true).write("${bestAddress?.hostName}\r\n")
     boundSocket.close()
 }
