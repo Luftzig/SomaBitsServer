@@ -18,6 +18,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.w3c.dom.Element
 import se.kth.somabits.common.BitsDevice
+import se.kth.somabits.common.ServiceName
 import kotlin.browser.window
 
 const val devicesSampleRateMs: Long = 5000
@@ -45,30 +46,7 @@ suspend fun main() {
             start.handledBy(loadAddresses)
         }
     }
-    val devicesStore = object : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
-        val endpoint = remote("/discover").acceptJson().header("Content-Type", "application/json")
-
-        val loadDevices = apply<Unit, List<BitsDevice>> {
-            endpoint.get().onErrorLog()
-                .body()
-                .map { value ->
-                    val parsed = Json.parse(MapSerializer(String.serializer(), BitsDevice::class.serializer()), value)
-                    parsed.values
-                        .toList()
-                }
-        } andThen update
-
-        val timer = channelFlow {
-            while (true) {
-                send(Unit)
-                delay(devicesSampleRateMs)
-            }
-        }
-
-        init {
-            timer handledBy loadDevices
-        }
-    }
+    val devicesStore = DevicesStore()
     val messagesStore = ConnectionsStore()
 
     GlobalScope.launch {
@@ -99,7 +77,7 @@ suspend fun main() {
                                 }
                             }
                             tbody {
-                                devicesStore.data.each().map(interfaceLine(messagesStore)).bind()
+                                devicesStore.data.each().map(interfaceLine(messagesStore, devicesStore)).bind()
                             }
                         }
                     }
@@ -109,6 +87,50 @@ suspend fun main() {
             }
         }
     }.mount("root")
+}
+
+@ImplicitReflectionSerializer
+class DevicesStore : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
+    val deviceEndpoint = remote("/device").acceptJson().header("Content-Type", "application/json")
+
+    val loadDevices = apply<Unit, List<BitsDevice>> {
+        deviceEndpoint.get().onErrorLog()
+            .body()
+            .map { value ->
+                val parsed = Json.parse(MapSerializer(String.serializer(), BitsDevice::class.serializer()), value)
+                parsed.values
+                    .toList()
+            }
+    } andThen update
+
+    val connectToDevice = handle { model: List<BitsDevice>, service: ServiceName ->
+        launch {
+            remote("/device").acceptJson().header("Content-Type", "application/json")
+                .post("/${service.name}/connect")
+                .collect()
+        }
+        model
+    }
+
+    val disconnectFromDevice = handle { model, device: ServiceName ->
+        launch {
+            remote("/device").acceptJson().header("Content-Type", "application/json")
+                .delete("/${device.name}/connect")
+                .collect()
+        }
+        model
+    }
+
+    val timer = channelFlow {
+        while (true) {
+            send(Unit)
+            delay(devicesSampleRateMs)
+        }
+    }
+
+    init {
+        timer handledBy loadDevices
+    }
 }
 
 class ConnectionsStore : RootStore<Map<String, WebSocketConnection>>(emptyMap()) {
@@ -132,25 +154,27 @@ class ConnectionsStore : RootStore<Map<String, WebSocketConnection>>(emptyMap())
     }
 }
 
-private fun interfaceLine(messagesStore: ConnectionsStore): (BitsDevice) -> Tag<Element> =
+@ImplicitReflectionSerializer
+private fun interfaceLine(messagesStore: ConnectionsStore, deviceStore: DevicesStore): (BitsDevice) -> Tag<Element> =
     { device: BitsDevice ->
         render {
             tr {
                 td { text(device.name.name) }
                 td { text("${device.address}:${device.port}") }
                 td {
-                    text(device.interfaces.groupBy { it.type }.map {
-                        "${it.key.name}: ${it.value.map {io -> "${io.id}: ${io.oscPattern}"}.joinToString(", ")}"
-                    }.joinToString("; "))
-                }
-                td {
                     device.interfaces.map { io ->
                         button {
                             clicks.map {
-                                "ws/connect/${device.name.name}/${io.oscPattern}"
+                                "ws/${device.name.name}/connect/${io.oscPattern}"
                             } handledBy messagesStore.toggle
                             text(io.oscPattern)
                         }
+                    }
+                }
+                td {
+                    button {
+                        clicks.map { device.name } handledBy deviceStore.disconnectFromDevice
+                        text("Disconnect")
                     }
                 }
             }

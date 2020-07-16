@@ -5,6 +5,7 @@ import io.ktor.application.*
 import io.ktor.features.ContentNegotiation
 import io.ktor.features.DataConversion
 import io.ktor.html.respondHtml
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.cio.websocket.*
 import io.ktor.http.content.resource
 import io.ktor.http.content.static
@@ -12,12 +13,12 @@ import io.ktor.network.selector.ActorSelectorManager
 import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.openWriteChannel
 import io.ktor.response.respond
-import io.ktor.routing.get
-import io.ktor.routing.route
-import io.ktor.routing.routing
+import io.ktor.routing.*
 import io.ktor.serialization.serialization
 import io.ktor.util.cio.write
+import io.ktor.util.pipeline.PipelineContext
 import io.ktor.websocket.webSocket
+import io.netty.handler.codec.spdy.SpdyHeaders
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.html.*
@@ -64,31 +65,7 @@ fun Application.module() {
     val oscConnections: MutableMap<ServiceName, OscConnection> = mutableMapOf()
 
     routing {
-        get("/") {
-            call.respondHtml {
-                head {
-                    link(
-                        rel = "stylesheet",
-                        href = "https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css"
-                    ) {
-                        attributes.put(
-                            "integrity",
-                            "sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk"
-                        )
-                        attributes.put("crossorigin", "anonymous")
-                    }
-
-                    title("Somabits Server")
-                }
-                body {
-                    div {
-                        id = "root"
-                        +"Loading..."
-                    }
-                    script(src = "/static/somabits.js") {}
-                }
-            }
-        }
+        get("/", serveFrontend())
 
         static("/static") {
             resource("somabits.js")
@@ -108,6 +85,30 @@ fun Application.module() {
                 call.respond(servicesManager.services)
             }
 
+            post("/{name}/connect") {
+                val serviceName = call.parameters["name"]?.let { it1 ->
+                    ServiceName(
+                        it1
+                    )
+                }
+                val handshakePort = call.request.queryParameters["usePort"]?.toIntOrNull() ?: defaultHandshakePort()
+                connectToDevice(servicesManager, serviceName, handshakePort, oscConnections)
+            }
+
+            delete("/{name}/connect") {
+                call.parameters["name"]?.let { it1 ->
+                    ServiceName(
+                        it1
+                    )
+                }?.let { name ->
+                    val removed = oscConnections.remove(name)
+                    if (removed != null) {
+                        call.respond(HttpStatusCode.NoContent)
+                    } else {
+                        call.respond(HttpStatusCode.NotFound)
+                    }
+                }
+            }
         }
 
         get("/connect/{service}/{port?}") {
@@ -117,49 +118,13 @@ fun Application.module() {
                 )
             }
             val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
-            val bitsService = servicesManager.services[serviceName]
-            val oscPort = defaultServerOscListeningPort()
-            log.info("Initializing handshake with $serviceName:$handshakePort")
-            if (bitsService != null) {
-                // We know that by know the server has at least one IP address
-                connectToService(bitsService, handshakePort, oscPort, oscConnections)
-                    .map { serverAddressUsed ->
-                        log.debug("Connection established with $bitsService")
-                        launch {
-                            call.respond(
-                                StatusResponse(
-                                    "ok",
-                                    "Sent address $serverAddressUsed to ${bitsService.address}:$handshakePort"
-                                )
-                            )
-                        }
-                    }
-                    .mapLeft {
-                        launch {
-                            call.respond(
-                                StatusResponse(
-                                    "failed",
-                                    "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
-                                )
-                            )
-                        }
-                    }
-            } else {
-                call.respond(
-                    StatusResponse(
-                        "failed",
-                        "Failed to find service '$serviceName'"
-                    )
-                )
-            }
+            connectToDevice(servicesManager, serviceName, handshakePort, oscConnections)
         }
 
-        webSocket("/ws/connect/{service}/{pattern}") {
+        webSocket("/ws/{device}/connect/{pattern}") {
             log.info("Create websocket channel with ${call.parameters}")
-            val serviceName = call.parameters["service"]?.let { it1 ->
-                ServiceName(
-                    it1
-                )
+            val serviceName = call.parameters["device"]?.let { it1 ->
+                ServiceName(it1)
             }
             val pattern = call.parameters["pattern"]
             if (serviceName == null || pattern == null) {
@@ -179,12 +144,13 @@ fun Application.module() {
                     send(Frame.Text("${it.time}: ${it.source}: ${it.message}"))
                 }
             }
-            while (true) {
+            while (connection?.isAlive() == true) {
                 val frame = incoming.receive()
                 if (frame is Frame.Text) {
-                    connection?.send("/$pattern", listOf(frame.readText()))
+                    connection.send("/$pattern", listOf(frame.readText()))
                 }
             }
+            close(CloseReason(CloseReason.Codes.GOING_AWAY, "BitDevice is offline"))
         }
 
         webSocket("/bitsws/echo") {
@@ -194,6 +160,77 @@ fun Application.module() {
                 if (frame is Frame.Text) {
                     send(Frame.Text("Client said: " + frame.readText()))
                 }
+            }
+        }
+    }
+}
+
+private suspend fun PipelineContext<Unit, ApplicationCall>.connectToDevice(
+    servicesManager: BonjourServicesManager,
+    serviceName: ServiceName?,
+    handshakePort: Int,
+    oscConnections: MutableMap<ServiceName, OscConnection>
+) {
+    val bitsService = servicesManager.services[serviceName]
+    val oscPort = application.defaultServerOscListeningPort()
+    log.info("Initializing handshake with $serviceName:$handshakePort")
+    if (bitsService != null) {
+        // We know that by know the server has at least one IP address
+        connectToService(bitsService, handshakePort, oscPort, oscConnections)
+            .map { serverAddressUsed ->
+                log.debug("Connection established with $bitsService")
+                launch {
+                    call.respond(
+                        StatusResponse(
+                            "ok",
+                            "Sent address $serverAddressUsed to ${bitsService.address}:$handshakePort"
+                        )
+                    )
+                }
+            }
+            .mapLeft {
+                launch {
+                    call.respond(
+                        StatusResponse(
+                            "failed",
+                            "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
+                        )
+                    )
+                }
+            }
+    } else {
+        call.respond(
+            StatusResponse(
+                "failed",
+                "Failed to find service '$serviceName'"
+            )
+        )
+    }
+}
+
+private fun serveFrontend(): suspend PipelineContext<Unit, ApplicationCall>.(Unit) -> Unit {
+    return {
+        call.respondHtml {
+            head {
+                link(
+                    rel = "stylesheet",
+                    href = "https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css"
+                ) {
+                    attributes.put(
+                        "integrity",
+                        "sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk"
+                    )
+                    attributes.put("crossorigin", "anonymous")
+                }
+
+                title("Somabits Server")
+            }
+            body {
+                div {
+                    id = "root"
+                    +"Loading..."
+                }
+                script(src = "/static/somabits.js") {}
             }
         }
     }

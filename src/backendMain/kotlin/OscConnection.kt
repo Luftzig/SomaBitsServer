@@ -43,4 +43,12 @@ class OscConnection(
     fun send(toAddress: String, values: List<*>) {
         sender.send(OSCMessage(toAddress, values))
     }
+
+    fun close() {
+        receiver.stopListening()
+    }
+
+    fun isAlive() =
+        receiver.isListening
+
 }
