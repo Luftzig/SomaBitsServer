@@ -17,7 +17,9 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.w3c.dom.Element
+import org.w3c.dom.events.MouseEvent
 import se.kth.somabits.common.BitsDevice
+import se.kth.somabits.common.BitsInterface
 import se.kth.somabits.common.ServiceName
 import kotlin.browser.window
 
@@ -28,6 +30,65 @@ fun buildWsUrl(path: String): String {
     return "ws://${browserUrl.host}/$path"
 }
 
+@ImplicitReflectionSerializer
+class DevicesStore : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
+    val deviceEndpoint = remote("/device").acceptJson().header("Content-Type", "application/json")
+
+    val loadDevices = apply<Unit, List<BitsDevice>> {
+        deviceEndpoint.get().onErrorLog()
+            .body()
+            .map { value ->
+                val parsed = Json.parse(MapSerializer(String.serializer(), BitsDevice::class.serializer()), value)
+                parsed.values
+                    .toList()
+            }
+    } andThen update
+
+    val connectToDevice = handle { model: List<BitsDevice>, service: ServiceName ->
+        launch {
+            remote("/device").acceptJson().header("Content-Type", "application/json")
+                .post("/${service.name}/connect")
+                .collect()
+        }
+        model
+    }
+
+    val disconnectFromDevice = handle { model, device: ServiceName ->
+        launch {
+            remote("/device").acceptJson().header("Content-Type", "application/json")
+                .delete("/${device.name}/connect")
+                .collect()
+        }
+        model
+    }
+
+    val timer = channelFlow {
+        while (true) {
+            send(Unit)
+            delay(devicesSampleRateMs)
+        }
+    }
+
+    init {
+        timer handledBy loadDevices
+    }
+}
+
+class ConnectionsStore : RootStore<Map<String, WebSocketConnection>>(emptyMap()) {
+    val removePrefix: SimpleHandler<String> = handle { model, prefix ->
+        model.minus(model.keys.filter { buildWebsocketUrl(ServiceName(it), "").startsWith(prefix) })
+    }
+    val toggle: SimpleHandler<String> = handle { data, addr ->
+        console.log("Toggling socket for ${addr} in $data, ${addr in data}")
+        if (addr in data) {
+            data - addr
+        } else {
+            val webSocketConnection = WebSocketConnection(buildWsUrl(addr))
+            console.log("Adding connection: $webSocketConnection")
+            data + (addr to webSocketConnection)
+        }
+    }
+}
 
 @ImplicitReflectionSerializer
 @ExperimentalCoroutinesApi
@@ -90,71 +151,6 @@ suspend fun main() {
 }
 
 @ImplicitReflectionSerializer
-class DevicesStore : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
-    val deviceEndpoint = remote("/device").acceptJson().header("Content-Type", "application/json")
-
-    val loadDevices = apply<Unit, List<BitsDevice>> {
-        deviceEndpoint.get().onErrorLog()
-            .body()
-            .map { value ->
-                val parsed = Json.parse(MapSerializer(String.serializer(), BitsDevice::class.serializer()), value)
-                parsed.values
-                    .toList()
-            }
-    } andThen update
-
-    val connectToDevice = handle { model: List<BitsDevice>, service: ServiceName ->
-        launch {
-            remote("/device").acceptJson().header("Content-Type", "application/json")
-                .post("/${service.name}/connect")
-                .collect()
-        }
-        model
-    }
-
-    val disconnectFromDevice = handle { model, device: ServiceName ->
-        launch {
-            remote("/device").acceptJson().header("Content-Type", "application/json")
-                .delete("/${device.name}/connect")
-                .collect()
-        }
-        model
-    }
-
-    val timer = channelFlow {
-        while (true) {
-            send(Unit)
-            delay(devicesSampleRateMs)
-        }
-    }
-
-    init {
-        timer handledBy loadDevices
-    }
-}
-
-class ConnectionsStore : RootStore<Map<String, WebSocketConnection>>(emptyMap()) {
-    val add: SimpleHandler<String> = handle { data, addr ->
-        if (addr !in data) {
-            data.plus(addr to WebSocketConnection(buildWsUrl(addr)))
-        } else data
-    }
-    val remove: SimpleHandler<String> = handle { data, addr ->
-        data.minus(addr)
-    }
-    val toggle: SimpleHandler<String> = handle { data, addr ->
-        console.log("Toggling socket for ${addr} in $data, ${addr in data}")
-        if (addr in data) {
-            data - addr
-        } else {
-            val webSocketConnection = WebSocketConnection(buildWsUrl(addr))
-            console.log("Adding connection: $webSocketConnection")
-            data + (addr to webSocketConnection)
-        }
-    }
-}
-
-@ImplicitReflectionSerializer
 private fun interfaceLine(messagesStore: ConnectionsStore, deviceStore: DevicesStore): (BitsDevice) -> Tag<Element> =
     { device: BitsDevice ->
         render {
@@ -164,22 +160,27 @@ private fun interfaceLine(messagesStore: ConnectionsStore, deviceStore: DevicesS
                 td {
                     device.interfaces.map { io ->
                         button {
-                            clicks.map {
-                                "ws/${device.name.name}/connect/${io.oscPattern}"
-                            } handledBy messagesStore.toggle
+                            clicks.map { buildWebsocketUrl(device.name, io.oscPattern) } handledBy messagesStore.toggle
                             text(io.oscPattern)
                         }
                     }
                 }
                 td {
                     button {
-                        clicks.map { device.name } handledBy deviceStore.disconnectFromDevice
+                        val clicksBroadcast = clicks.map { device.name }.broadcastIn(MainScope()).asFlow()
+                        clicksBroadcast handledBy deviceStore.disconnectFromDevice
+                        clicksBroadcast.map { it.name } handledBy messagesStore.removePrefix
                         text("Disconnect")
                     }
                 }
             }
         }
     }
+
+private fun buildWebsocketUrl(
+    deviceName: ServiceName,
+    pattern: String
+): String = "ws/${deviceName.name}/connect/${pattern.dropWhile { it == '/' }}"
 
 private fun HtmlElements.header(addressStore: RootStore<List<String>>) {
     div("row") {

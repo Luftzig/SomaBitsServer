@@ -82,40 +82,6 @@ class BonjourServicesManager(
     }
 }
 
-fun main(arg: Array<String>) {
-    val loggerContext = LoggerFactory.getILoggerFactory() as LoggerContext
-    loggerContext.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).level = Level.INFO
-    val jmDnsInstance = JmDNS.create()
-    jmDnsInstance.addServiceListener(SOMA_BITS_BONJOUR_SERVICE_NAME, object : ServiceListener {
-        override fun serviceResolved(event: ServiceEvent?) {
-//            println("Resolved: $event")
-        }
-
-        override fun serviceRemoved(event: ServiceEvent?) {
-            println("Removed: $event")
-        }
-
-        override fun serviceAdded(event: ServiceEvent?) {
-            println("Added: $event")
-        }
-
-    })
-    while (true) {
-        val line = readLine()?.split(" ")
-        when (line?.first()) {
-            "q", "quit" -> exitProcess(0)
-            "l", "list" -> println(jmDnsInstance.list(SOMA_BITS_BONJOUR_SERVICE_NAME))
-            "p", "print" -> if (line.size > 1) {
-                val serviceName = line.drop(1).joinToString(" ")
-                println("$serviceName:")
-                val serviceInfo = jmDnsInstance.getServiceInfo(SOMA_BITS_BONJOUR_SERVICE_NAME, serviceName)
-                println(serviceInfo.hostAddresses.joinToString(", "))
-                println(serviceInfo.port)
-                println(serviceInfo.niceTextString)
-            }
-        }
-    }
-}
 
 fun BitsDevice.Companion.from(serviceInfo: ServiceInfo): BitsDevice =
     BitsDevice(
@@ -128,11 +94,7 @@ fun BitsDevice.Companion.from(serviceInfo: ServiceInfo): BitsDevice =
     )
 
 private fun parseInterfaces(textBytes: ByteArray?): List<BitsInterface> =
-    textBytes?.let {
-        parseBonjourTxtRecord(
-            it
-        )
-    }
+    textBytes?.let { parseBonjourTxtRecord(it) }
         .orEmpty()
         .map {
             BitsInterface(

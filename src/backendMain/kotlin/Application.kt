@@ -85,49 +85,41 @@ fun Application.module() {
                 call.respond(servicesManager.services)
             }
 
-            post("/{name}/connect") {
-                val serviceName = call.parameters["name"]?.let { it1 ->
-                    ServiceName(
-                        it1
-                    )
+            route("{name}/connect") {
+                post {
+                    val serviceName = call.parameters["name"]?.let { it1 ->
+                        ServiceName(
+                            it1
+                        )
+                    }
+                    val handshakePort = call.request.queryParameters["usePort"]?.toIntOrNull() ?: defaultHandshakePort()
+                    connectToDevice(servicesManager, serviceName, handshakePort, oscConnections)
                 }
-                val handshakePort = call.request.queryParameters["usePort"]?.toIntOrNull() ?: defaultHandshakePort()
-                connectToDevice(servicesManager, serviceName, handshakePort, oscConnections)
-            }
 
-            delete("/{name}/connect") {
-                call.parameters["name"]?.let { it1 ->
-                    ServiceName(
-                        it1
-                    )
-                }?.let { name ->
-                    val removed = oscConnections.remove(name)
-                    if (removed != null) {
-                        call.respond(HttpStatusCode.NoContent)
-                    } else {
-                        call.respond(HttpStatusCode.NotFound)
+                delete {
+                    call.parameters["name"]?.let { it1 ->
+                        ServiceName(
+                            it1
+                        )
+                    }?.let { name ->
+                        val removed = oscConnections.remove(name)
+                        if (removed != null) {
+                            call.respond(HttpStatusCode.NoContent)
+                        } else {
+                            call.respond(HttpStatusCode.NotFound)
+                        }
                     }
                 }
             }
         }
 
-        get("/connect/{service}/{port?}") {
-            val serviceName = call.parameters["service"]?.let { it1 ->
-                ServiceName(
-                    it1
-                )
-            }
-            val handshakePort = call.parameters["port"]?.toIntOrNull() ?: defaultHandshakePort()
-            connectToDevice(servicesManager, serviceName, handshakePort, oscConnections)
-        }
-
-        webSocket("/ws/{device}/connect/{pattern}") {
-            log.info("Create websocket channel with ${call.parameters}")
+        webSocket("/ws/{device}/connect/{pattern...}") {
+            log.info("Creating websocket channel with ${call.parameters}")
             val serviceName = call.parameters["device"]?.let { it1 ->
                 ServiceName(it1)
             }
-            val pattern = call.parameters["pattern"]
-            if (serviceName == null || pattern == null) {
+            val pattern = call.parameters.getAll("pattern")
+            if (serviceName == null || pattern.isNullOrEmpty()) {
                 close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Missing arguments"))
                 return@webSocket
             }
@@ -136,10 +128,10 @@ fun Application.module() {
                 servicesManager.services,
                 oscConnections
             )
-            log.info("starting OSC session with ${serviceName?.name}:$pattern")
+            log.info("starting OSC session with ${serviceName.name}:$pattern")
             send("Stream started")
-            connection?.listenTo("/$pattern") {
-                log.debug("Received message on connection ${serviceName?.name}/${pattern}")
+            connection?.listenTo("/${pattern.joinToString("/")}") {
+                log.debug("Received message on connection ${serviceName.name}/${pattern}")
                 launch {
                     send(Frame.Text("${it.time}: ${it.source}: ${it.message}"))
                 }
@@ -147,9 +139,10 @@ fun Application.module() {
             while (connection?.isAlive() == true) {
                 val frame = incoming.receive()
                 if (frame is Frame.Text) {
-                    connection.send("/$pattern", listOf(frame.readText()))
+                    connection.send("/${pattern.joinToString("/")}", listOf(frame.readText()))
                 }
             }
+            log.info("Connection ended to $serviceName")
             close(CloseReason(CloseReason.Codes.GOING_AWAY, "BitDevice is offline"))
         }
 
@@ -176,7 +169,7 @@ private suspend fun PipelineContext<Unit, ApplicationCall>.connectToDevice(
     log.info("Initializing handshake with $serviceName:$handshakePort")
     if (bitsService != null) {
         // We know that by know the server has at least one IP address
-        connectToService(bitsService, handshakePort, oscPort, oscConnections)
+        connectToService(bitsService, handshakePort, oscConnections)
             .map { serverAddressUsed ->
                 log.debug("Connection established with $bitsService")
                 launch {
@@ -244,7 +237,7 @@ private suspend fun Application.createNewConnection(
     log.info("Creating new connection to ${serviceName.name}")
     val bitsService = services[serviceName]
     val oscPort = defaultServerOscListeningPort()
-    val result = bitsService?.let { connectToService(it, defaultHandshakePort(), oscPort, oscConnections) }
+    val result = bitsService?.let { connectToService(it, defaultHandshakePort(), oscConnections) }
     return when (result) {
         is Either.Right -> oscConnections[serviceName]
         is Either.Left -> {
@@ -261,12 +254,11 @@ private suspend fun Application.createNewConnection(
 private suspend fun connectToService(
     bitsDevice: BitsDevice,
     handshakePort: Int,
-    serverOscListeningPort: Int,
     oscConnections: MutableMap<ServiceName, OscConnection>
 ): Either<Throwable, InetAddress> {
     val bestMatchingServerAddress =
         getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsDevice.address).length }!!
-    registerService(oscConnections, bitsDevice, bestMatchingServerAddress, serverOscListeningPort)
+    registerService(oscConnections, bitsDevice, bestMatchingServerAddress)
     return Either.catch {
         sendServerIp(
             bitsDevice,
@@ -280,13 +272,13 @@ private suspend fun connectToService(
 private fun registerService(
     oscConnections: MutableMap<ServiceName, OscConnection>,
     bitsDevice: BitsDevice,
-    bestMatchingServerAddress: InetAddress,
-    serverListeningPort: Int
+    bestMatchingServerAddress: InetAddress
 ) {
     oscConnections[bitsDevice.name] =
         OscConnection(
             bestMatchingServerAddress,
-            serverListeningPort,
+//            bitsDevice.port,
+            32000,
             InetAddress.getByName(bitsDevice.address),
             bitsDevice.port
         )
