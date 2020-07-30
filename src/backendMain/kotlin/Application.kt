@@ -19,7 +19,11 @@ import io.ktor.util.cio.write
 import io.ktor.util.pipeline.PipelineContext
 import io.ktor.websocket.webSocket
 import io.netty.handler.codec.spdy.SpdyHeaders
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.consume
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.launch
 import kotlinx.html.*
 import se.kth.somabits.common.*
@@ -37,6 +41,7 @@ fun getLocalAddresses(): Iterable<InetAddress> =
         .map { it.address }
 
 //@Suppress("unused") // Referenced in application.conf
+@ExperimentalCoroutinesApi
 fun Application.module() {
     install(DataConversion)
 
@@ -62,7 +67,7 @@ fun Application.module() {
                 )
             })
 
-    val oscConnections: MutableMap<ServiceName, OscConnection> = mutableMapOf()
+    val oscConnections: MutableMap<Pair<ServiceName, BitsInterface>, OscConnection> = mutableMapOf()
 
     routing {
         get("/", serveFrontend())
@@ -93,7 +98,6 @@ fun Application.module() {
                         )
                     }
                     val handshakePort = call.request.queryParameters["usePort"]?.toIntOrNull() ?: defaultHandshakePort()
-                    connectToDevice(servicesManager, serviceName, handshakePort, oscConnections)
                 }
 
                 delete {
@@ -102,8 +106,9 @@ fun Application.module() {
                             it1
                         )
                     }?.let { name ->
-                        val removed = oscConnections.remove(name)
-                        if (removed != null) {
+                        val toRemove = oscConnections.filterKeys { (devName, _) -> name == devName }.keys
+                        if (toRemove.isNotEmpty()) {
+                            oscConnections.minusAssign(toRemove)
                             call.respond(HttpStatusCode.NoContent)
                         } else {
                             call.respond(HttpStatusCode.NotFound)
@@ -123,82 +128,72 @@ fun Application.module() {
                 close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Missing arguments"))
                 return@webSocket
             }
-            val connection = oscConnections[serviceName] ?: createNewConnection(
-                serviceName,
-                servicesManager.services,
-                oscConnections
-            )
-            log.info("starting OSC session with ${serviceName.name}:$pattern")
-            send("Stream started")
-            connection?.listenTo("/${pattern.joinToString("/")}") {
-                log.debug("Received message on connection ${serviceName.name}/${pattern}")
-                launch {
-                    send(Frame.Text("${it.time}: ${it.source}: ${it.message}"))
+            val deviceAndInterface = getDeviceAndInterface(serviceName, pattern, servicesManager.services)
+            val connection = deviceAndInterface?.let { (device, io): Pair<BitsDevice, BitsInterface> ->
+                oscConnections.computeIfAbsent(device.name to io) {
+                    when (io.type) {
+                        BitsInterfaceType.Unknown -> TODO()
+                        BitsInterfaceType.Sensor -> {
+                            SensorConnection(
+                                bestMatchingAddress(device.address),
+//                                device.port,
+                                32000,
+                                InetAddress.getByName(device.address),
+                                device.port
+                            )
+                        }
+                        BitsInterfaceType.Actuator -> ActuatorConnection(
+                            InetAddress.getByName(device.address),
+                            device.port
+                        )
+                    }
                 }
             }
-            while (connection?.isAlive() == true) {
-                val frame = incoming.receive()
-                if (frame is Frame.Text) {
-                    connection.send("/${pattern.joinToString("/")}", listOf(frame.readText()))
+            when (connection) {
+                is SensorConnection -> {
+                    try {
+                        connection.getListenChannel(CoroutineScope(coroutineContext), "/${pattern.joinToString("/")}")
+                            .consumeEach {
+                                outgoing.send(Frame.Text(it.toString()))
+                            }
+                    } finally {
+                        connection.close()
+                        close(CloseReason(CloseReason.Codes.GOING_AWAY, "BitsDevice is offline"))
+                    }
+                }
+                is ActuatorConnection -> {
+                    try {
+                        incoming.consumeEach { frame ->
+                            when (frame) {
+                                is Frame.Text ->
+                                    connection.send("/${pattern.joinToString("/")}", listOf(frame.readText()))
+                            }
+                        }
+                    } finally {
+                        close(CloseReason(CloseReason.Codes.NORMAL, "Ended"))
+                    }
+                }
+                null -> {
+                    close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Failed to connect"))
                 }
             }
             log.info("Connection ended to $serviceName")
-            close(CloseReason(CloseReason.Codes.GOING_AWAY, "BitDevice is offline"))
-        }
-
-        webSocket("/bitsws/echo") {
-            send(Frame.Text("Hi from server"))
-            while (true) {
-                val frame = incoming.receive()
-                if (frame is Frame.Text) {
-                    send(Frame.Text("Client said: " + frame.readText()))
-                }
-            }
         }
     }
 }
 
-private suspend fun PipelineContext<Unit, ApplicationCall>.connectToDevice(
-    servicesManager: BonjourServicesManager,
-    serviceName: ServiceName?,
-    handshakePort: Int,
-    oscConnections: MutableMap<ServiceName, OscConnection>
-) {
-    val bitsService = servicesManager.services[serviceName]
-    val oscPort = application.defaultServerOscListeningPort()
-    log.info("Initializing handshake with $serviceName:$handshakePort")
-    if (bitsService != null) {
-        // We know that by know the server has at least one IP address
-        connectToService(bitsService, handshakePort, oscConnections)
-            .map { serverAddressUsed ->
-                log.debug("Connection established with $bitsService")
-                launch {
-                    call.respond(
-                        StatusResponse(
-                            "ok",
-                            "Sent address $serverAddressUsed to ${bitsService.address}:$handshakePort"
-                        )
-                    )
-                }
-            }
-            .mapLeft {
-                launch {
-                    call.respond(
-                        StatusResponse(
-                            "failed",
-                            "Failed to handshake with bit at ${bitsService.address}:$handshakePort: $it"
-                        )
-                    )
-                }
-            }
-    } else {
-        call.respond(
-            StatusResponse(
-                "failed",
-                "Failed to find service '$serviceName'"
-            )
-        )
-    }
+private fun bestMatchingAddress(remoteAddress: String): InetAddress {
+    return getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(remoteAddress).length }!!
+}
+
+private fun getDeviceAndInterface(
+    name: ServiceName,
+    pattern: List<String>,
+    devices: Map<ServiceName, BitsDevice>
+): Pair<BitsDevice, BitsInterface>? {
+    val device = devices.get(name)
+    val io = device?.interfaces?.find { it.oscPattern == "/${pattern.joinToString("/")}" }
+    return device?.let { d -> io?.let { io1 -> d to io1 } }
 }
 
 private fun serveFrontend(): suspend PipelineContext<Unit, ApplicationCall>.(Unit) -> Unit {
@@ -227,77 +222,6 @@ private fun serveFrontend(): suspend PipelineContext<Unit, ApplicationCall>.(Uni
             }
         }
     }
-}
-
-private suspend fun Application.createNewConnection(
-    serviceName: ServiceName,
-    services: Map<ServiceName, BitsDevice>,
-    oscConnections: MutableMap<ServiceName, OscConnection>
-): OscConnection? {
-    log.info("Creating new connection to ${serviceName.name}")
-    val bitsService = services[serviceName]
-    val oscPort = defaultServerOscListeningPort()
-    val result = bitsService?.let { connectToService(it, defaultHandshakePort(), oscConnections) }
-    return when (result) {
-        is Either.Right -> oscConnections[serviceName]
-        is Either.Left -> {
-            log.warn("Failed to retrieve OSC connection due to: ${result.a}")
-            null
-        }
-        else -> {
-            log.warn("No service by the name ${serviceName.name} was found")
-            null
-        }
-    }
-}
-
-private suspend fun connectToService(
-    bitsDevice: BitsDevice,
-    handshakePort: Int,
-    oscConnections: MutableMap<ServiceName, OscConnection>
-): Either<Throwable, InetAddress> {
-    val bestMatchingServerAddress =
-        getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(bitsDevice.address).length }!!
-    registerService(oscConnections, bitsDevice, bestMatchingServerAddress)
-    return Either.catch {
-        sendServerIp(
-            bitsDevice,
-            handshakePort,
-            bestMatchingServerAddress
-        )
-        bestMatchingServerAddress
-    }
-}
-
-private fun registerService(
-    oscConnections: MutableMap<ServiceName, OscConnection>,
-    bitsDevice: BitsDevice,
-    bestMatchingServerAddress: InetAddress
-) {
-    oscConnections[bitsDevice.name] =
-        OscConnection(
-            bestMatchingServerAddress,
-//            bitsDevice.port,
-            32000,
-            InetAddress.getByName(bitsDevice.address),
-            bitsDevice.port
-        )
-}
-
-private suspend fun sendServerIp(
-    bitsDevice: BitsDevice,
-    handshakePort: Int,
-    bestAddress: InetAddress?
-) {
-    val socket = aSocket(
-        ActorSelectorManager(
-            Dispatchers.IO
-        )
-    ).tcp()
-    val boundSocket = socket.connect(InetSocketAddress(bitsDevice.address, handshakePort))
-    log.debug("Sending server IP $bestAddress to device ${bitsDevice.name}")
-    boundSocket.openWriteChannel(autoFlush = true).write("${bestAddress?.hostName}\r\n")
-    boundSocket.close()
 }
 
 private fun Application.defaultDiscoveryServices() =
