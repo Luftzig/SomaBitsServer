@@ -5,6 +5,7 @@ import dev.fritz2.dom.Tag
 import dev.fritz2.dom.html.HtmlElements
 import dev.fritz2.dom.html.render
 import dev.fritz2.dom.mount
+import dev.fritz2.dom.valuesAsNumber
 import dev.fritz2.remote.body
 import dev.fritz2.remote.onErrorLog
 import dev.fritz2.remote.remote
@@ -17,15 +18,15 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.w3c.dom.Element
-import org.w3c.dom.events.MouseEvent
 import se.kth.somabits.common.BitsDevice
 import se.kth.somabits.common.BitsInterface
+import se.kth.somabits.common.BitsInterfaceType
 import se.kth.somabits.common.ServiceName
 import kotlin.browser.window
 
 const val devicesSampleRateMs: Long = 5000
 
-fun buildWsUrl(path: String): String {
+fun websocketPathToFullUrl(path: String): String {
     val browserUrl = window.location
     return "ws://${browserUrl.host}/$path"
 }
@@ -44,24 +45,6 @@ class DevicesStore : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
             }
     } andThen update
 
-    val connectToDevice = handle { model: List<BitsDevice>, service: ServiceName ->
-        launch {
-            remote("/device").acceptJson().header("Content-Type", "application/json")
-                .post("/${service.name}/connect")
-                .collect()
-        }
-        model
-    }
-
-    val disconnectFromDevice = handle { model, device: ServiceName ->
-        launch {
-            remote("/device").acceptJson().header("Content-Type", "application/json")
-                .delete("/${device.name}/connect")
-                .collect()
-        }
-        model
-    }
-
     val timer = channelFlow {
         while (true) {
             send(Unit)
@@ -74,19 +57,27 @@ class DevicesStore : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
     }
 }
 
-class ConnectionsStore : RootStore<Map<String, WebSocketConnection>>(emptyMap()) {
-    val removePrefix: SimpleHandler<String> = handle { model, prefix ->
-        model.minus(model.keys.filter { buildWebsocketUrl(ServiceName(it), "").startsWith(prefix) })
+typealias ConnectionId = Pair<ServiceName, BitsInterface>
+typealias ConnectionsMap = Map<ConnectionId, WebSocketConnection>
+
+@ExperimentalCoroutinesApi
+class ConnectionsStore : RootStore<ConnectionsMap>(emptyMap()) {
+    val addInterface: SimpleHandler<ConnectionId> = handle { model, connectionId: ConnectionId ->
+        val (device, bitsIo) = connectionId
+        val webSocket = WebSocketConnection(websocketPathToFullUrl(buildWebsocketUrl(device, bitsIo.oscPattern)))
+        model + (connectionId to webSocket)
     }
-    val toggle: SimpleHandler<String> = handle { data, addr ->
-        console.log("Toggling socket for ${addr} in $data, ${addr in data}")
-        if (addr in data) {
-            data - addr
-        } else {
-            val webSocketConnection = WebSocketConnection(buildWsUrl(addr))
-            console.log("Adding connection: $webSocketConnection")
-            data + (addr to webSocketConnection)
-        }
+    val removeInterface: SimpleHandler<ConnectionId> = handle { model, connectionId ->
+        model[connectionId]?.close()
+        model - (connectionId)
+    }
+    val removeDevice: SimpleHandler<ServiceName> = handle { model, service ->
+        model.filterKeys { it.first == service }
+            .onEach { it.value.close() }
+            .keys
+            .let {
+                model - it
+            }
     }
 }
 
@@ -138,7 +129,9 @@ suspend fun main() {
                                 }
                             }
                             tbody {
-                                devicesStore.data.each().map(interfaceLine(messagesStore, devicesStore)).bind()
+                                devicesStore.data
+                                    .onEach { console.log("New device store $it") }
+                                    .each().map(renderDevice(messagesStore, devicesStore)).bind()
                             }
                         }
                     }
@@ -151,7 +144,7 @@ suspend fun main() {
 }
 
 @ImplicitReflectionSerializer
-private fun interfaceLine(messagesStore: ConnectionsStore, deviceStore: DevicesStore): (BitsDevice) -> Tag<Element> =
+private fun renderDevice(messagesStore: ConnectionsStore, deviceStore: DevicesStore): (BitsDevice) -> Tag<Element> =
     { device: BitsDevice ->
         render {
             tr {
@@ -160,18 +153,17 @@ private fun interfaceLine(messagesStore: ConnectionsStore, deviceStore: DevicesS
                 td {
                     device.interfaces.map { io ->
                         button {
-                            clicks.map { buildWebsocketUrl(device.name, io.oscPattern) } handledBy messagesStore.toggle
-                            text(io.oscPattern)
+                            clicks.map { device.name to io } handledBy messagesStore.addInterface
+                            +(io.oscPattern)
+                            +when (io.type) {
+                                BitsInterfaceType.Sensor -> "⇥"
+                                BitsInterfaceType.Actuator -> "⤇"
+                                BitsInterfaceType.Unknown -> ""
+                            }
                         }
                     }
                 }
                 td {
-                    button {
-                        val clicksBroadcast = clicks.map { device.name }.broadcastIn(MainScope()).asFlow()
-                        clicksBroadcast handledBy deviceStore.disconnectFromDevice
-                        clicksBroadcast.map { it.name } handledBy messagesStore.removePrefix
-                        text("Disconnect")
-                    }
                 }
             }
         }
@@ -198,25 +190,52 @@ private fun HtmlElements.header(addressStore: RootStore<List<String>>) {
     }
 }
 
-private fun HtmlElements.messages(messagesStore: RootStore<Map<String, WebSocketConnection>>) {
+private fun HtmlElements.messages(messagesStore: ConnectionsStore) {
     div("row") {
         h3("col-md-12") { text("Connections: ") }
         div("col-md-12") {
             messagesStore.data
                 .map { it.entries.toList() }
                 .each()
-                .map { (addr, socket) ->
+                .map { (connectionId, socket) ->
+                    val (deviceName, bitsIo) = connectionId
                     render {
                         div("row") {
                             div("col-md-3") {
-                                text(addr)
+                                +"${deviceName.name} ${bitsIo.oscPattern}"
                             }
-                            div("col-md-4") {
-                                socket.messages.map {
-                                    render { span { text(it.data.toString()) } }
-                                }.bind()
+                            div("col-md-5") {
+                                when (bitsIo.type) {
+                                    BitsInterfaceType.Unknown -> +"Unknown"
+                                    BitsInterfaceType.Sensor ->
+                                        socket.messages
+                                            .map {
+                                                it.data.toString().split(":").drop(1)
+                                            }
+                                            .map {
+                                                render { span { text(it.joinToString(",")) } }
+                                            }.bind()
+                                    BitsInterfaceType.Actuator ->
+                                        input(id = connectionId.toString()) {
+                                            type = const("range")
+                                            name = const(connectionId.toString())
+                                            bitsIo.range?.let {
+                                                min = const(bitsIo.range.first.toString())
+                                                max = const(bitsIo.range.second.toString())
+                                            }
+                                            changes.valuesAsNumber()
+                                                .onEach { socket.send(it.toString()) }
+                                                .map {
+                                                    render {
+                                                        label(`for` = connectionId.toString()) {
+                                                            +it.toString()
+                                                        }
+                                                    }
+                                                }.bind()
+                                        }
+                                }
                             }
-                            div("col-md-4") {
+                            div("col-md-3") {
                                 socket.errors.map {
                                     console.warn("Error from websocket")
                                     console.warn(it)
@@ -224,6 +243,10 @@ private fun HtmlElements.messages(messagesStore: RootStore<Map<String, WebSocket
                                         span { text(it.toString()) }
                                     }
                                 }.bind()
+                                button {
+                                    +"×"
+                                    clicks.map { connectionId } handledBy messagesStore.removeInterface
+                                }
                             }
                         }
                     }

@@ -130,24 +130,7 @@ fun Application.module() {
             }
             val deviceAndInterface = getDeviceAndInterface(serviceName, pattern, servicesManager.services)
             val connection = deviceAndInterface?.let { (device, io): Pair<BitsDevice, BitsInterface> ->
-                oscConnections.computeIfAbsent(device.name to io) {
-                    when (io.type) {
-                        BitsInterfaceType.Unknown -> TODO()
-                        BitsInterfaceType.Sensor -> {
-                            SensorConnection(
-                                bestMatchingAddress(device.address),
-//                                device.port,
-                                32000,
-                                InetAddress.getByName(device.address),
-                                device.port
-                            )
-                        }
-                        BitsInterfaceType.Actuator -> ActuatorConnection(
-                            InetAddress.getByName(device.address),
-                            device.port
-                        )
-                    }
-                }
+                getOrCreateConnection(oscConnections, device, io)
             }
             val patternString = "/${pattern.joinToString("/")}"
             when (connection) {
@@ -167,7 +150,7 @@ fun Application.module() {
                         incoming.consumeEach { frame ->
                             when (frame) {
                                 is Frame.Text ->
-                                    connection.send(patternString, listOf(frame.readText()))
+                                    connection.send(patternString, listOf(frame.readText().toFloat()))
                             }
                         }
                     } finally {
@@ -179,6 +162,31 @@ fun Application.module() {
                 }
             }
             log.info("Connection ended to $serviceName:$patternString")
+        }
+    }
+}
+
+private fun getOrCreateConnection(
+    oscConnections: MutableMap<Pair<ServiceName, BitsInterface>, OscConnection>,
+    device: BitsDevice,
+    io: BitsInterface
+): OscConnection {
+    return oscConnections.computeIfAbsent(device.name to io) {
+        when (io.type) {
+            BitsInterfaceType.Unknown -> TODO()
+            BitsInterfaceType.Sensor -> {
+                SensorConnection(
+                    bestMatchingAddress(device.address),
+//                                device.port,
+                    32000,
+                    InetAddress.getByName(device.address),
+                    device.port
+                )
+            }
+            BitsInterfaceType.Actuator -> ActuatorConnection(
+                InetAddress.getByName(device.address),
+                device.port
+            )
         }
     }
 }

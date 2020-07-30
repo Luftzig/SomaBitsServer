@@ -159,7 +159,6 @@ void loop() {
 
   if ((inflatePower >= -100) && (inflatePower <= -11)) {
     deflate();
-
   }
 
   if ((inflatePower > -11) && (inflatePower < 11)) {
@@ -190,14 +189,15 @@ void loop() {
 }
 
 void routeInflate(OSCMessage &msg) {
+  Serial.println("routeInflate");
   //returns true if the data in the first position is a float
   if (msg.isFloat(0)) {
     //get that float
     float data = msg.getFloat(0);
 
+    Serial.print("routeInflate: ");
     Serial.println(data);
     inflatePower = (int) data;
-
   }
 }
 
