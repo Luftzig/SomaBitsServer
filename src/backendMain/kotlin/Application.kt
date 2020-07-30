@@ -149,15 +149,16 @@ fun Application.module() {
                     }
                 }
             }
+            val patternString = "/${pattern.joinToString("/")}"
             when (connection) {
                 is SensorConnection -> {
                     try {
-                        connection.getListenChannel(CoroutineScope(coroutineContext), "/${pattern.joinToString("/")}")
+                        connection.getListenChannel(CoroutineScope(coroutineContext), patternString)
                             .consumeEach {
-                                outgoing.send(Frame.Text(it.toString()))
+                                outgoing.offer(Frame.Text("${it.time}:${it.message.arguments}"))
                             }
                     } finally {
-                        connection.close()
+                        connection.stopListener(patternString)
                         close(CloseReason(CloseReason.Codes.GOING_AWAY, "BitsDevice is offline"))
                     }
                 }
@@ -166,7 +167,7 @@ fun Application.module() {
                         incoming.consumeEach { frame ->
                             when (frame) {
                                 is Frame.Text ->
-                                    connection.send("/${pattern.joinToString("/")}", listOf(frame.readText()))
+                                    connection.send(patternString, listOf(frame.readText()))
                             }
                         }
                     } finally {
@@ -177,7 +178,7 @@ fun Application.module() {
                     close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Failed to connect"))
                 }
             }
-            log.info("Connection ended to $serviceName")
+            log.info("Connection ended to $serviceName:$patternString")
         }
     }
 }

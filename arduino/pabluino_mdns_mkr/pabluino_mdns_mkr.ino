@@ -1,9 +1,9 @@
 /*
-The following code is based on following examples:
+  The following code is based on following examples:
 
-https://github.com/adafruit/Adafruit_MPRLS/blob/master/examples/mprls_simpletest/mprls_simpletest.ino
-https://github.com/arduino-libraries/MKRMotorCarrier/blob/master/examples/Motor_test/Motor_test.ino
-p_sanches Serverbit code
+  https://github.com/adafruit/Adafruit_MPRLS/blob/master/examples/mprls_simpletest/mprls_simpletest.ino
+  https://github.com/arduino-libraries/MKRMotorCarrier/blob/master/examples/Motor_test/Motor_test.ino
+  p_sanches Serverbit code
 
 */
 #include <MKRMotorCarrier.h>
@@ -243,17 +243,16 @@ float getPressure() {
 }
 
 void sendOSCPressure(float pressure) {
-    Serial.println("Sending pressure");
-    //the message wants an OSC address as first argument
-    OSCMessage msg("/sensor/pressure");
-    msg.add(pressure);
+  //the message wants an OSC address as first argument
+  OSCMessage msg("/sensor/pressure");
+  msg.add(pressure);
 
-    Udp.beginPacket(serverIp, serverPort);
-    msg.send(Udp); // send the bytes to the SLIP stream
-    Udp.endPacket(); // mark the end of the OSC Packet
-    msg.empty(); // free space occupied by message
+  Udp.beginPacket(serverIp, serverPort);
+  msg.send(Udp); // send the bytes to the SLIP stream
+  Udp.endPacket(); // mark the end of the OSC Packet
+  msg.empty(); // free space occupied by message
 
-    delay(20);
+  delay(20);
 }
 
 void connectToServer() {

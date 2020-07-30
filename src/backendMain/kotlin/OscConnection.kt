@@ -1,9 +1,6 @@
 package se.kth.somabits.backend
 
-import com.illposed.osc.MessageSelector
-import com.illposed.osc.OSCMessage
-import com.illposed.osc.OSCMessageEvent
-import com.illposed.osc.OSCMessageListener
+import com.illposed.osc.*
 import com.illposed.osc.messageselector.OSCPatternAddressMessageSelector
 import com.illposed.osc.transport.udp.OSCPortIn
 import com.illposed.osc.transport.udp.OSCPortInBuilder
@@ -76,8 +73,16 @@ class SensorConnection(
             ), OSCMessageListener { scope.launch {
                 channel.send(it)
             } })
-        log.debug("Returning channel")
         return channel
+    }
+
+    fun stopListener(pattern: String) {
+        receiver.packetListeners.removeAll { oscPacketListener ->
+            when (oscPacketListener) {
+                is OSCMessageListener -> true
+                else -> false
+            }
+        }
     }
 
     fun isAlive() =
