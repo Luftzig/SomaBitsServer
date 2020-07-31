@@ -10,6 +10,8 @@ import dev.fritz2.remote.body
 import dev.fritz2.remote.onErrorLog
 import dev.fritz2.remote.remote
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BroadcastChannel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.ImplicitReflectionSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -160,6 +162,7 @@ private fun renderDevice(messagesStore: ConnectionsStore, deviceStore: DevicesSt
                                 BitsInterfaceType.Actuator -> "⤇"
                                 BitsInterfaceType.Unknown -> ""
                             }
+                            +if (io.units != "Unknown") " ${io.units}" else ""
                         }
                     }
                 }
@@ -210,29 +213,31 @@ private fun HtmlElements.messages(messagesStore: ConnectionsStore) {
                                     BitsInterfaceType.Sensor ->
                                         socket.messages
                                             .map {
-                                                it.data.toString().split(":").drop(1)
-                                            }
-                                            .map {
-                                                render { span { text(it.joinToString(",")) } }
+                                                render { span { +it.data.toString() } }
                                             }.bind()
-                                    BitsInterfaceType.Actuator ->
-                                        input(id = connectionId.toString()) {
+                                    BitsInterfaceType.Actuator -> {
+                                        val inputName = "${deviceName.name}-${bitsIo.type}-${bitsIo.id}"
+                                        var values: Flow<Double> = emptyFlow()
+                                        input(id = inputName) {
                                             type = const("range")
-                                            name = const(connectionId.toString())
+                                            name = const(inputName)
                                             bitsIo.range?.let {
                                                 min = const(bitsIo.range.first.toString())
                                                 max = const(bitsIo.range.second.toString())
                                             }
-                                            changes.valuesAsNumber()
+                                            defaultValue = flowOf("0")
+                                            values = changes.valuesAsNumber()
+                                                .repeatEvery(50)
                                                 .onEach { socket.send(it.toString()) }
-                                                .map {
-                                                    render {
-                                                        label(`for` = connectionId.toString()) {
-                                                            +it.toString()
-                                                        }
-                                                    }
-                                                }.bind()
                                         }
+                                        values.map {
+                                                render {
+                                                    label(`for` = inputName) {
+                                                        +it.toString()
+                                                    }
+                                                }
+                                            }.bind()
+                                    }
                                 }
                             }
                             div("col-md-3") {

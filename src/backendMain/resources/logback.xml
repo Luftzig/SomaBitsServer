@@ -10,4 +10,5 @@
     <logger name="org.eclipse.jetty" level="INFO"/>
     <logger name="io.netty" level="INFO"/>
     <logger name="javax.jmdns" level="INFO"/>
+    <logger name="com.illposed.osc.argument.handler" level="INFO"/>
 </configuration>

@@ -138,7 +138,7 @@ fun Application.module() {
                     try {
                         connection.getListenChannel(CoroutineScope(coroutineContext), patternString)
                             .consumeEach {
-                                outgoing.offer(Frame.Text("${it.time}:${it.message.arguments}"))
+                                outgoing.offer(Frame.Text("${it.message.arguments.first()}"))
                             }
                     } finally {
                         connection.stopListener(patternString)
