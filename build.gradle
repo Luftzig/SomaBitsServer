@@ -26,6 +26,7 @@ repositories {
     mavenLocal()
     maven { url 'https://kotlin.bintray.com/ktor' }
     maven { url 'https://kotlin.bintray.com/kotlinx' }
+    maven { url 'https://dl.bintray.com/spekframework/spek-dev/' }
 }
 
 kotlin {
@@ -43,6 +44,12 @@ kotlin {
                 dependsOn(frontendBrowserProductionWebpack)
                 from(frontendBrowserProductionWebpack.outputPath)
             }
+
+        }
+    }
+    jvmTest {
+        useJUnitPlatform {
+            includeEngines 'spek2'
         }
     }
     sourceSets {
@@ -85,6 +92,9 @@ kotlin {
             dependencies {
                 implementation kotlin('test')
                 implementation kotlin('test-junit')
+                implementation "org.spekframework.spek2:spek-dsl-jvm:$spek_version"
+                runtimeOnly "org.spekframework.spek2:spek-runner-junit5:$spek_version"
+                runtimeOnly "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
             }
         }
         frontendMain {

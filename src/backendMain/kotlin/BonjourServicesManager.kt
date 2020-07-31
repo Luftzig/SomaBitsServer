@@ -93,7 +93,7 @@ fun BitsDevice.Companion.from(serviceInfo: ServiceInfo): BitsDevice =
         )
     )
 
-private fun parseInterfaces(textBytes: ByteArray?): List<BitsInterface> =
+fun parseInterfaces(textBytes: ByteArray?): List<BitsInterface> =
     textBytes?.let { parseBonjourTxtRecord(it) }
         .orEmpty()
         .map {
@@ -101,9 +101,14 @@ private fun parseInterfaces(textBytes: ByteArray?): List<BitsInterface> =
                 type = extractInterfaceType(it.first),
                 id = extractInterfaceId(it.first),
                 oscPattern = extractInterfaceChannel(it.second),
-                range = extractInterfaceRange(it.second)
+                range = extractInterfaceRange(it.second),
+                units = extractInterfaceUnits(it.second)
             )
         }
+
+fun extractInterfaceUnits(value: String): String =
+    value.split(":")
+        .getOrElse(2) { "Unknown" }
 
 fun extractInterfaceRange(value: String): Pair<Int, Int>? =
     value.split(":")
