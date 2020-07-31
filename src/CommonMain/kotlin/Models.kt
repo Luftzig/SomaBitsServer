@@ -32,7 +32,8 @@ data class BitsInterface(
     val type: BitsInterfaceType,
     val id: String,
     val oscPattern: String,
-    val range: Pair<Int, Int>?
+    val range: Pair<Int, Int>?,
+    val units: String = "Unknown"
 )
 
 /**
