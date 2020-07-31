@@ -108,7 +108,7 @@ void setup() {
 bool setupMDNS() {
   mdns.begin(WiFi.localIP(), deviceName.c_str());
 
-  String capabilities[] = {"sensor1=/sensor/pressure:0%2000",
+  String capabilities[] = {"sensor1=/sensor/pressure:0%2000:hPa",
                            "actuator1=/actuator/inflate:-100%100"
                           };
 
@@ -189,14 +189,13 @@ void loop() {
 }
 
 void routeInflate(OSCMessage &msg) {
-  Serial.println("routeInflate");
   //returns true if the data in the first position is a float
   if (msg.isFloat(0)) {
     //get that float
     float data = msg.getFloat(0);
 
-    Serial.print("routeInflate: ");
-    Serial.println(data);
+    // Serial.print("routeInflate: ");
+    // Serial.println(data);
     inflatePower = (int) data;
   }
 }
@@ -214,16 +213,16 @@ void routeDeflateDur(OSCMessage &msg) {
 void inflate() {
   M1.setDuty(inflatePower);
   M2.setDuty(0);
-  M3.setDuty(40);
-  M4.setDuty(0);
+  M3.setDuty(0);
+  M4.setDuty(40);
   // Serial.println("Inflate");
 
 }
 
 void deflate() {
-  M1.setDuty(0);
-  M2.setDuty(abs(inflatePower));
-  M3.setDuty(0);
+  M1.setDuty(abs(inflatePower));
+  M2.setDuty(0);
+  M3.setDuty(40);
   M4.setDuty(0);
   //Serial.println("Deflate");
 }
@@ -232,7 +231,7 @@ void hold() {
   M1.setDuty(0);
   M2.setDuty(0);
   M3.setDuty(0);
-  M4.setDuty(40);
+  M4.setDuty(0);
   // Serial.println("Hold");
 }
 
