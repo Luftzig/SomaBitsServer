@@ -217,7 +217,7 @@ private fun HtmlElements.messages(messagesStore: ConnectionsStore) {
                                             }.bind()
                                     BitsInterfaceType.Actuator -> {
                                         val inputName = "${deviceName.name}-${bitsIo.type}-${bitsIo.id}"
-                                        var values: Flow<Double> = emptyFlow()
+                                        val valueStore = RootStore(0.0)
                                         input(id = inputName) {
                                             type = const("range")
                                             name = const(inputName)
@@ -226,17 +226,17 @@ private fun HtmlElements.messages(messagesStore: ConnectionsStore) {
                                                 max = const(bitsIo.range.second.toString())
                                             }
                                             defaultValue = flowOf("0")
-                                            values = changes.valuesAsNumber()
+                                            changes.valuesAsNumber()
                                                 .repeatEvery(50)
-                                                .onEach { socket.send(it.toString()) }
+                                                .onEach { socket.send(it.toString()) } handledBy valueStore.update
                                         }
-                                        values.map {
-                                                render {
-                                                    label(`for` = inputName) {
-                                                        +it.toString()
-                                                    }
+                                        valueStore.data.map {
+                                            render {
+                                                label(`for` = inputName) {
+                                                    +it.toString()
                                                 }
-                                            }.bind()
+                                            }
+                                        }.bind()
                                     }
                                 }
                             }
