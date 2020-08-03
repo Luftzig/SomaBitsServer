@@ -1,9 +1,9 @@
 /*
-The following code is based on following examples:
+  The following code is based on following examples:
 
-https://github.com/adafruit/Adafruit_MPRLS/blob/master/examples/mprls_simpletest/mprls_simpletest.ino
-https://github.com/arduino-libraries/MKRMotorCarrier/blob/master/examples/Motor_test/Motor_test.ino
-p_sanches Serverbit code
+  https://github.com/adafruit/Adafruit_MPRLS/blob/master/examples/mprls_simpletest/mprls_simpletest.ino
+  https://github.com/arduino-libraries/MKRMotorCarrier/blob/master/examples/Motor_test/Motor_test.ino
+  p_sanches Serverbit code
 
 */
 
@@ -17,6 +17,9 @@ p_sanches Serverbit code
 #include <OSCMessage.h>
 #include <OSCBundle.h>
 #include <OSCBoards.h>
+#include <ArduinoMDNS.h>
+
+#include "arduino_secrets.h"
 
 #define RESET_PIN  -1  // set to any GPIO pin # to hard-reset on begin()
 #define EOC_PIN    -1  // set to any GPIO pin to read end-of-conversion by pin
@@ -26,16 +29,20 @@ int inflatePower = 0;
 
 const int buttonPin = 7;     // the number of the pushbutton pin
 
-char ssid[] = "serv";        // your network SSID (name)
-char pass[] = "somaserv";    // your network password (use for WPA, or use as key for WEP)
+char ssid[] = SECRET_SSID;    // your network SSID (name)
+char pass[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
 int status = WL_IDLE_STATUS;     // the WiFi radio's status
 
-unsigned int localPort = 12000;      // local port to listen on
+String deviceName = String(DEVICE_NAME);
+unsigned int localPort = TCP_LISTENING_PORT;      // local port to listen on
 char packetBuffer[255]; //buffer to hold incoming packet
 
 WiFiUDP Udp;
+WiFiUDP udpMdns;
 
-const IPAddress serverIp(192, 168, 0, 140); // 192, 168, 0, 140
+MDNS mdns(udpMdns);
+
+IPAddress serverIp((uint32_t)0);
 const unsigned int serverPort = 32000;
 
 
@@ -47,18 +54,13 @@ int period_connect_server = 5000;  //how often in miliseconds to reconnect actua
 
 void setup() {
   // put your setup code here, to run once:
-Serial.begin(9600);
+  Serial.begin(9600);
 
-//  while (!Serial) {
-//    ; // wait for serial port to connect. Needed for native USB port only
-//  }
-
-// attempt to connect to WiFi network:
   while ( status != WL_CONNECTED) {
     Serial.print("Attempting to connect to WPA SSID: ");
     Serial.println(ssid);
     // Connect to network:
-    status = WiFi.begin(ssid,pass);
+    status = WiFi.begin(ssid, pass);
 
     // wait 10 seconds for connection:
     delay(10000);
@@ -71,72 +73,51 @@ Serial.begin(9600);
 
   Serial.print("\nStarting listening on port:");
   Serial.print(localPort);
+  setupMDNS();
+
   // if you get a connection, report back via serial:
   Udp.begin(localPort);
-
-
 
   //register with server
   connectToServer();
   delay(50);
-
-
-
 }
 
 void loop() {
+  mdns.run();
+  char incomingByte = 0;   // for incoming serial data
+  if (Serial.available() > 0) {
+    // read the incoming byte:
+    incomingByte = Serial.read();
+    if (incomingByte == 'c') { //if you write 'c' in the command line, it will connect to the server at the specified IP address above
+      connectToServer();
+      delay(50);
+    }
+  }
 
-    char incomingByte = 0;   // for incoming serial data
-      if (Serial.available() > 0) {
-        // read the incoming byte:
-        incomingByte = Serial.read();
-        if (incomingByte == 'c') { //if you write 'c' in the command line, it will connect to the server at the specified IP address above
-          connectToServer();
-          delay(50);
-        }
-      }
+  OSCBundle bundleIN;
+  int size;
 
-    OSCBundle bundleIN;
-    int size;
+  if ( (size = Udp.parsePacket()) > 0)
+  {
 
-    if ( (size = Udp.parsePacket()) > 0)
+    while (size--)
+      bundleIN.fill(Udp.read());
+
+    if (!bundleIN.hasError())
     {
-  
-      while (size--)
-        bundleIN.fill(Udp.read());
-  
-      if (!bundleIN.hasError())
-      {
-  
-        bundleIN.dispatch("/actuator/inflate", routeInflate);
-        bundleIN.dispatch("/actuator/deflate", routeDeflate);
-        bundleIN.dispatch("/actuator/inflatedur", routeInflateDur);
-        bundleIN.dispatch("/actuator/deflatedur", routeDeflateDur);
-  
-      }
+      bundleIN.dispatch("/actuator/inflate", routeInflate);
+      bundleIN.dispatch("/actuator/deflate", routeDeflate);
+      bundleIN.dispatch("/actuator/inflatedur", routeInflateDur);
+      bundleIN.dispatch("/actuator/deflatedur", routeDeflateDur);
     }
+  }
 
-
-    //we send the pressure in a OSC message to the server every some miliseconds, specified in the variable 'period'
-    
-    
-    if(millis() > time_now + period){
-        time_now = millis();
-        sendOSCButton(digitalRead(buttonPin));
-        Serial.println(digitalRead(buttonPin));
-    }
-
-
-    
-
-    //this is just while Pavel does not add physical buttons! WHen he does, delete this code
-//     if(millis() > time_now_connect_server + period_connect_server){
-//        time_now_connect_server = millis();
-//        sendOSCPressure(getPressure());
-//        connectToServer();
-//        delay(50);
-//    }
-     
+  if (millis() > time_now + period) {
+    time_now = millis();
+    sendOSCButton(digitalRead(buttonPin));
+    Serial.println(digitalRead(buttonPin));
+  }
 }
 
 void routeInflate(OSCMessage &msg) {
@@ -160,11 +141,6 @@ void routeInflateDur(OSCMessage &msg) {
 void routeDeflateDur(OSCMessage &msg) {
 }
 
-
-
-
- 
-
 void sendOSCPressure(float pressure) {
   //the message wants an OSC address as first argument
   OSCMessage msg("/sensor/pressure");
@@ -178,7 +154,7 @@ void sendOSCPressure(float pressure) {
   delay(20);
 }
 
-void sendOSCButton(float buttonstate) {
+void sendOSCButton(int buttonstate) {
   //the message wants an OSC address as first argument
   OSCMessage msg("/sensor/buttonstate");
   msg.add(buttonstate);
@@ -191,23 +167,33 @@ void sendOSCButton(float buttonstate) {
   delay(20);
 }
 
-
-
-
 void connectToServer() {
-
+  serverIp.fromString(SERVER_IP);
   Serial.print("\nConnecting to server bit at ");
   Serial.print(serverIp); Serial.print(":"); Serial.println(serverPort);
-
   OSCMessage msg("/actuator/startConnection/");
-
   Udp.beginPacket(serverIp, serverPort);
-        
   msg.send(Udp); // send the bytes to the SLIP stream
-
   Udp.endPacket();
-
   msg.empty(); // free space occupied by message
+}
+
+bool setupMDNS() {
+  mdns.begin(WiFi.localIP(), deviceName.c_str());
+
+  String capabilities[] = CAPABILITIES;
+
+  String capText = String('\0');
+  for (String cap : capabilities) {
+    capText += (char) cap.length();
+    capText += cap;
+  }
+
+  // Register this bit
+  return mdns.addServiceRecord((deviceName + "._osc").c_str(),
+                               localPort,
+                               MDNSServiceUDP,
+                               capText.c_str());
 }
 
 void printWiFiData() {
@@ -222,7 +208,6 @@ void printWiFiData() {
   WiFi.macAddress(mac);
   Serial.print("MAC address: ");
   printMacAddress(mac);
-
 }
 
 void printCurrentNet() {
@@ -260,4 +245,3 @@ void printMacAddress(byte mac[]) {
   }
   Serial.println();
 }
-  
