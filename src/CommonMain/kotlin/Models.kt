@@ -21,6 +21,8 @@ data class ServiceName(val name: String) {
     }
 }
 
+typealias ConnectionId = Pair<ServiceName, BitsInterface>
+
 enum class BitsInterfaceType {
     Unknown,
     Sensor,

@@ -19,12 +19,13 @@ import io.ktor.util.cio.write
 import io.ktor.util.pipeline.PipelineContext
 import io.ktor.websocket.webSocket
 import io.netty.handler.codec.spdy.SpdyHeaders
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.consume
 import kotlinx.coroutines.channels.consumeEach
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.map
+import kotlinx.coroutines.channels.mapNotNull
+import kotlinx.coroutines.flow.consumeAsFlow
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.html.*
 import se.kth.somabits.common.*
 import java.net.InetAddress
@@ -41,6 +42,7 @@ fun getLocalAddresses(): Iterable<InetAddress> =
         .map { it.address }
 
 //@Suppress("unused") // Referenced in application.conf
+@OptIn(InternalCoroutinesApi::class)
 @ExperimentalCoroutinesApi
 fun Application.module() {
     install(DataConversion)
@@ -67,7 +69,7 @@ fun Application.module() {
                 )
             })
 
-    val oscConnections: MutableMap<Pair<ServiceName, BitsInterface>, OscConnection> = mutableMapOf()
+    val oscConnections = OscManager(defaultServerOscListeningPort())
 
     routing {
         get("/", serveFrontend())
@@ -101,18 +103,15 @@ fun Application.module() {
                 }
 
                 delete {
-                    call.parameters["name"]?.let { it1 ->
-                        ServiceName(
-                            it1
-                        )
+                    call.parameters["name"]?.let {
+                        ServiceName(it)
                     }?.let { name ->
-                        val toRemove = oscConnections.filterKeys { (devName, _) -> name == devName }.keys
-                        if (toRemove.isNotEmpty()) {
-                            oscConnections.minusAssign(toRemove)
-                            call.respond(HttpStatusCode.NoContent)
-                        } else {
-                            call.respond(HttpStatusCode.NotFound)
-                        }
+                        servicesManager.services[name]
+                    }?.let { bitsDevice: BitsDevice ->
+                        oscConnections.closeAll(bitsDevice.address)
+                        call.respond(HttpStatusCode.NoContent)
+                    } ?: run {
+                        call.respond(HttpStatusCode.NotFound)
                     }
                 }
             }
@@ -129,70 +128,48 @@ fun Application.module() {
                 return@webSocket
             }
             val deviceAndInterface = getDeviceAndInterface(serviceName, pattern, servicesManager.services)
-            val connection = deviceAndInterface?.let { (device, io): Pair<BitsDevice, BitsInterface> ->
-                getOrCreateConnection(oscConnections, device, io)
+            if (deviceAndInterface == null) {
+                close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "No pattern ${pattern.joinToString("/")} for $serviceName"))
+                return@webSocket
             }
             val patternString = "/${pattern.joinToString("/")}"
-            when (connection) {
-                is SensorConnection -> {
+            val (device, io) = deviceAndInterface
+            when (io.type) {
+                BitsInterfaceType.Unknown -> {
+                    close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Failed to connect"))
+                }
+                BitsInterfaceType.Sensor -> {
                     try {
-                        connection.getListenChannel(CoroutineScope(coroutineContext), patternString)
-                            .consumeEach {
-                                outgoing.offer(Frame.Text("${it.message.arguments.first()}"))
-                            }
+                        oscConnections.incomingFrom(device.address, patternString, this).consumeEach {
+                            outgoing.send(Frame.Text("${it.message.arguments.first()}"))
+                        }
+                    } catch (e: Throwable) {
+                        log.error("Connection ${device.address}/$patternString terminated due to unexpected error", e)
                     } finally {
-                        connection.stopListener(patternString)
+                        oscConnections.close(device.address, patternString)
                         close(CloseReason(CloseReason.Codes.GOING_AWAY, "BitsDevice is offline"))
                     }
                 }
-                is ActuatorConnection -> {
+                BitsInterfaceType.Actuator -> {
                     try {
-                        incoming.consumeEach { frame ->
-                            when (frame) {
-                                is Frame.Text ->
-                                    connection.send(patternString, listOf(frame.readText().toFloat()))
-                            }
-                        }
+                        oscConnections.sendTo(
+                            device.address,
+                            device.port,
+                            patternString,
+                            incoming.consumeAsFlow().mapNotNull { frame ->
+                                when (frame) {
+                                    is Frame.Text -> listOf(frame.readText().toFloat())
+                                    else -> null
+                                }
+                            })
                     } finally {
                         close(CloseReason(CloseReason.Codes.NORMAL, "Ended"))
                     }
-                }
-                null -> {
-                    close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Failed to connect"))
                 }
             }
             log.info("Connection ended to $serviceName:$patternString")
         }
     }
-}
-
-private fun getOrCreateConnection(
-    oscConnections: MutableMap<Pair<ServiceName, BitsInterface>, OscConnection>,
-    device: BitsDevice,
-    io: BitsInterface
-): OscConnection {
-    return oscConnections.computeIfAbsent(device.name to io) {
-        when (io.type) {
-            BitsInterfaceType.Unknown -> TODO()
-            BitsInterfaceType.Sensor -> {
-                SensorConnection(
-                    bestMatchingAddress(device.address),
-//                                device.port,
-                    32000,
-                    InetAddress.getByName(device.address),
-                    device.port
-                )
-            }
-            BitsInterfaceType.Actuator -> ActuatorConnection(
-                InetAddress.getByName(device.address),
-                device.port
-            )
-        }
-    }
-}
-
-private fun bestMatchingAddress(remoteAddress: String): InetAddress {
-    return getLocalAddresses().maxBy { it.hostAddress.longestMatchingSubstring(remoteAddress).length }!!
 }
 
 private fun getDeviceAndInterface(

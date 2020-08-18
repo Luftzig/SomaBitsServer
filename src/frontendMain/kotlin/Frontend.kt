@@ -20,10 +20,7 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.w3c.dom.Element
-import se.kth.somabits.common.BitsDevice
-import se.kth.somabits.common.BitsInterface
-import se.kth.somabits.common.BitsInterfaceType
-import se.kth.somabits.common.ServiceName
+import se.kth.somabits.common.*
 import kotlin.browser.window
 
 const val devicesSampleRateMs: Long = 5000
@@ -59,7 +56,6 @@ class DevicesStore : RootStore<List<BitsDevice>>(emptyList(), id = "bits") {
     }
 }
 
-typealias ConnectionId = Pair<ServiceName, BitsInterface>
 typealias ConnectionsMap = Map<ConnectionId, WebSocketConnection>
 
 @ExperimentalCoroutinesApi

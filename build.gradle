@@ -27,6 +27,7 @@ repositories {
     maven { url 'https://kotlin.bintray.com/ktor' }
     maven { url 'https://kotlin.bintray.com/kotlinx' }
     maven { url 'https://dl.bintray.com/spekframework/spek-dev/' }
+    maven { url "https://jitpack.io" }
 }
 
 kotlin {
@@ -81,7 +82,9 @@ kotlin {
                 implementation "io.ktor:ktor-serialization:$ktor_version"
                 implementation "io.ktor:ktor-gson:$ktor_version"
                 implementation "org.jmdns:jmdns:3.5.5"
-                implementation "com.illposed.osc:javaosc-core:0.7"
+                // Using my fork
+                implementation "com.github.Luftzig:JavaOSC:master-SNAPSHOT"
+//                implementation "com.illposed.osc:javaosc-core:0.7"
                 implementation "io.ktor:ktor-html-builder:$ktor_version"
                 implementation "org.jetbrains.kotlinx:kotlinx-serialization-runtime:$serialization_version"
                 implementation "io.arrow-kt:arrow-core:$arrow_version"

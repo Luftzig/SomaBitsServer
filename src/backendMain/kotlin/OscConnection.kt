@@ -3,104 +3,107 @@ package se.kth.somabits.backend
 import com.illposed.osc.*
 import com.illposed.osc.messageselector.OSCPatternAddressMessageSelector
 import com.illposed.osc.transport.udp.OSCPortIn
-import com.illposed.osc.transport.udp.OSCPortInBuilder
 import com.illposed.osc.transport.udp.OSCPortOut
-import javafx.application.Application.launch
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
-import kotlinx.coroutines.channels.produce
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import se.kth.somabits.common.BitsInterfaceType
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import se.kth.somabits.common.ConnectionId
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
 val allMessagesSelector = object : MessageSelector {
-    override fun isInfoRequired(): Boolean = false
+    override fun isInfoRequired(): Boolean = true
 
-    override fun matches(messageEvent: OSCMessageEvent?): Boolean = true
+    override fun matches(messageEvent: OSCMessageEvent?): Boolean {
+        return true
+    }
 }
 
-sealed class OscConnection(
-    val remoteAddress: InetAddress,
-    val remotePort: Int
-) {}
+class RemoteAndPatternOscSelector(val remote: InetAddress, val pattern: String) :
+    OSCPatternAddressMessageSelector(pattern) {
+    override fun isInfoRequired(): Boolean = false
 
-class SensorConnection(
-    private val localAddress: InetAddress,
-    val localPort: Int,
-    remoteAddress: InetAddress,
-    remotePort: Int
-) : OscConnection(remoteAddress, remotePort) {
-    private val receiver: OSCPortIn = OSCPortInBuilder()
-        .setLocalSocketAddress(InetSocketAddress(localAddress, localPort))
-        .setRemoteSocketAddress(InetSocketAddress(remoteAddress, remotePort))
-        .build()
+    override fun matches(messageEvent: OSCMessageEvent?): Boolean =
+        when (val source = messageEvent?.source) {
+        is OSCPortIn.OSCPortInSource ->
+            (source.sender as? InetSocketAddress)?.address == remote
+                    && super.matches(messageEvent)
+        else -> false
+    }
+}
 
-    init {
-        log.info("Creating OSC connection to $remoteAddress")
-        kotlin.runCatching {
-            receiver.isResilient = true
-            receiver.startListening()
-        }.onFailure {
-            log.warn("Failed to listen to service $this due to $it")
-        }.onSuccess {
-            log.debug("Started listening for connections on ${receiver.localAddress}:${localPort}, isListening? ${receiver.isListening}")
+typealias OSCSelectorAndListener = Pair<MessageSelector, OSCMessageListener>
+typealias UDPPort = Int
+typealias RemoteID = String
+typealias OscPattern = String
+
+@InternalCoroutinesApi
+class OscManager(val listenPort: Int) {
+    val listeners: MutableMap<Pair<RemoteID, OscPattern>, OSCSelectorAndListener> = mutableMapOf()
+    val incomingConnections: MutableMap<UDPPort, OSCPortIn> = mutableMapOf()
+    val outgoingConnections: MutableMap<Pair<RemoteID, UDPPort>, OSCPortOut> = mutableMapOf()
+
+    suspend fun incomingFrom(
+        remoteAddress: RemoteID,
+        listeningPort: UDPPort,
+        pattern: OscPattern,
+        scope: CoroutineScope = MainScope()
+    ): ReceiveChannel<OSCMessageEvent> =
+        incomingConnections.computeIfAbsent(listeningPort) { port ->
+            OSCPortIn(port)
+        }.let { port ->
+            val channel = Channel<OSCMessageEvent>()
+            val (selector, listener) = listeners.computeIfAbsent(remoteAddress to pattern) { address ->
+                val selector = RemoteAndPatternOscSelector(InetAddress.getByName(remoteAddress), pattern)
+                val channelListener = OSCMessageListener {
+                    scope.launch {
+                        channel.send(it)
+                    }
+                }
+                selector to channelListener
+            }
+            port.dispatcher.addListener(selector, listener)
+            port.startListening()
+            log.debug("Returning channel for $port")
+            channel
         }
 
-        log.debug("Initialized connection ${receiver.remoteAddress} from ${receiver.localAddress}")
+    suspend fun incomingFrom(
+        remoteAddress: String,
+        pattern: String,
+        scope: CoroutineScope = MainScope()
+    ): ReceiveChannel<OSCMessageEvent> =
+        incomingFrom(remoteAddress, listenPort, pattern, scope)
 
-        receiver.dispatcher.addBadDataListener {
-            log.warn("Received Bad OSC message from ${remoteAddress}: $it")
-        }
-    }
-
-    fun listenTo(pattern: String, listener: (OSCMessageEvent) -> Unit) {
-        receiver.dispatcher.addListener(
-            OSCPatternAddressMessageSelector(
-                pattern
-            ), OSCMessageListener { listener(it) })
-    }
-
-    @ExperimentalCoroutinesApi
-    suspend fun getListenChannel(scope: CoroutineScope, pattern: String): ReceiveChannel<OSCMessageEvent> {
-        val channel = Channel<OSCMessageEvent>()
-        receiver.dispatcher.addListener(
-            OSCPatternAddressMessageSelector(
-                pattern
-            ), OSCMessageListener { scope.launch {
-                channel.send(it)
-            } })
-        return channel
-    }
-
-    fun stopListener(pattern: String) {
-        receiver.packetListeners.removeAll { oscPacketListener ->
-            when (oscPacketListener) {
-                is OSCMessageListener -> true
-                else -> false
+    suspend fun sendTo(remoteAddress: String, remotePort: UDPPort, pattern: String, data: Flow<List<*>>) {
+        outgoingConnections.computeIfAbsent(remoteAddress to remotePort) { (address, port): Pair<RemoteID, UDPPort> ->
+            OSCPortOut(InetAddress.getByName(address), port)
+        }.let { portOut ->
+            data.collect { input ->
+                portOut.send(OSCMessage(pattern, input))
             }
         }
     }
 
-    fun isAlive() =
-        receiver.isListening
-
-    fun close() {
-        receiver.stopListening()
+    fun close(remoteAddress: RemoteID, pattern: OscPattern) {
+        incomingConnections.values.forEach { port ->
+            listeners[remoteAddress to pattern]?.let { (selector, listener) ->
+                port.dispatcher.removeListener(selector, listener)
+            }
+            listeners.remove(remoteAddress to pattern)
+        }
     }
-}
 
-class ActuatorConnection(
-    remoteAddress: InetAddress,
-    remotePort: Int
-) : OscConnection(remoteAddress, remotePort) {
-    val sender = OSCPortOut(remoteAddress, remotePort)
-
-    fun send(toAddress: String, values: List<*>) {
-        sender.send(OSCMessage(toAddress, values))
+    fun closeAll(remoteAddress: RemoteID) {
+        incomingConnections.values.forEach { port ->
+            val targetListeners = listeners.filterKeys { (remote, _) -> remote == remoteAddress }
+            targetListeners.values.forEach { (selector, listener) ->
+                port.dispatcher.removeListener(selector, listener)
+            }
+            listeners -= targetListeners.keys
+        }
     }
 }
 
