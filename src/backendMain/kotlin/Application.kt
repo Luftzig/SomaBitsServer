@@ -32,6 +32,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.time.Duration
+import java.util.concurrent.CancellationException
 
 fun main(args: Array<String>): Unit = io.ktor.server.netty.EngineMain.main(args)
 
@@ -140,9 +141,11 @@ fun Application.module() {
                 }
                 BitsInterfaceType.Sensor -> {
                     try {
-                        oscConnections.incomingFrom(device.address, patternString, this).consumeEach {
+                        oscConnections.incomingFrom(device.address, patternString, scope = this).consumeEach {
                             outgoing.send(Frame.Text("${it.message.arguments.first()}"))
                         }
+                    } catch (e: CancellationException) {
+                        log.debug("Channel ${device.address}/$patternString was closed by peer", e)
                     } catch (e: Throwable) {
                         log.error("Connection ${device.address}/$patternString terminated due to unexpected error", e)
                     } finally {

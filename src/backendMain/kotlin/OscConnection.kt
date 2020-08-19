@@ -58,8 +58,12 @@ class OscManager(val listenPort: Int) {
             val (selector, listener) = listeners.computeIfAbsent(remoteAddress to pattern) { address ->
                 val selector = RemoteAndPatternOscSelector(InetAddress.getByName(remoteAddress), pattern)
                 val channelListener = OSCMessageListener {
-                    scope.launch {
-                        channel.send(it)
+                    if (scope.isActive) {
+                        scope.launch {
+                            channel.send(it)
+                        }
+                    } else {
+                        close(remoteAddress, pattern)
                     }
                 }
                 selector to channelListener

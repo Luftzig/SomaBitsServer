@@ -90,6 +90,9 @@ kotlin {
                 implementation "io.arrow-kt:arrow-core:$arrow_version"
                 implementation "io.arrow-kt:arrow-syntax:$arrow_version"
             }
+            configurations.all {
+                resolutionStrategy.cacheChangingModulesFor 1, "minutes"
+            }
         }
         backendTest {
             dependencies {
