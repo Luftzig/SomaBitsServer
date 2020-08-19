@@ -27,11 +27,11 @@ class RemoteAndPatternOscSelector(val remote: InetAddress, val pattern: String) 
 
     override fun matches(messageEvent: OSCMessageEvent?): Boolean =
         when (val source = messageEvent?.source) {
-        is OSCPortIn.OSCPortInSource ->
-            (source.sender as? InetSocketAddress)?.address == remote
-                    && super.matches(messageEvent)
-        else -> false
-    }
+            is OSCPortIn.OSCPortInSource ->
+                (source.sender as? InetSocketAddress)?.address == remote
+                        && super.matches(messageEvent)
+            else -> false
+        }
 }
 
 typealias OSCSelectorAndListener = Pair<MessageSelector, OSCMessageListener>
@@ -39,12 +39,31 @@ typealias UDPPort = Int
 typealias RemoteID = String
 typealias OscPattern = String
 
+/**
+ * Manages incoming and outgoing connections to OSC devices.
+ * This code depended on a patched version of JavaOSC at github.com/Luftzig/JavaOSC, see PR #55 and issue #50 on
+ * hoijui/JavaOSC
+ * @see <a href="github.com/hoijui/JavaOSC">JavaOSC</a>
+ *
+ * @param listenPort - default port on which to listen to incoming connections.
+ */
 @InternalCoroutinesApi
 class OscManager(val listenPort: Int) {
     val listeners: MutableMap<Pair<RemoteID, OscPattern>, OSCSelectorAndListener> = mutableMapOf()
     val incomingConnections: MutableMap<UDPPort, OSCPortIn> = mutableMapOf()
     val outgoingConnections: MutableMap<Pair<RemoteID, UDPPort>, OSCPortOut> = mutableMapOf()
 
+    /**
+     * Create an {@value ReceiveChannel<OSCMessageEvent} that allows the caller to consume OSC message events
+     * that have originated from the supplied {@value remoteAddress} and sent to the given {@value listeningPort}
+     * with the given OSC pattern {@value pattern}.
+     *
+     * This can be given a coroutine scope on which to handle the messages.
+     * Notice: the default MainScope may not be available! It is advised to pass a scope. When the scope is no longer
+     * active the listener is automatically cleaned.
+     *
+     * @see com.illposed.osc package for valid OSC patterns.
+     */
     suspend fun incomingFrom(
         remoteAddress: RemoteID,
         listeningPort: UDPPort,
@@ -81,6 +100,11 @@ class OscManager(val listenPort: Int) {
     ): ReceiveChannel<OSCMessageEvent> =
         incomingFrom(remoteAddress, listenPort, pattern, scope)
 
+    /**
+     * Send messages to the remote device, on given port and OSC pattern, supplying the messages from a Flow.
+     *
+     * @see <a href="https://kotlinlang.org/docs/reference/coroutines/flow.html">Coroutine Flows</a>
+     */
     suspend fun sendTo(remoteAddress: String, remotePort: UDPPort, pattern: String, data: Flow<List<*>>) {
         outgoingConnections.computeIfAbsent(remoteAddress to remotePort) { (address, port): Pair<RemoteID, UDPPort> ->
             OSCPortOut(InetAddress.getByName(address), port)
@@ -91,6 +115,12 @@ class OscManager(val listenPort: Int) {
         }
     }
 
+    /**
+     * Terminates an incoming connection and remove the listener from the OSC port
+     *
+     * Notice: Since outgoing connections are forgetful, there's no need to clean them, the same port can be always
+     * reused.
+     */
     fun close(remoteAddress: RemoteID, pattern: OscPattern) {
         incomingConnections.values.forEach { port ->
             listeners[remoteAddress to pattern]?.let { (selector, listener) ->
@@ -100,6 +130,12 @@ class OscManager(val listenPort: Int) {
         }
     }
 
+    /**
+     * Terminate all incoming connections from a given remote address.
+     *
+     * Notice: Since outgoing connections are forgetful, there's no need to clean them, the same port can be always
+     * reused.
+     */
     fun closeAll(remoteAddress: RemoteID) {
         incomingConnections.values.forEach { port ->
             val targetListeners = listeners.filterKeys { (remote, _) -> remote == remoteAddress }
