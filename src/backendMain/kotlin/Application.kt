@@ -24,8 +24,7 @@ import kotlinx.coroutines.channels.consume
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.channels.map
 import kotlinx.coroutines.channels.mapNotNull
-import kotlinx.coroutines.flow.consumeAsFlow
-import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.*
 import kotlinx.html.*
 import se.kth.somabits.common.*
 import java.net.InetAddress
@@ -159,13 +158,23 @@ fun Application.module() {
                             device.address,
                             device.port,
                             patternString,
-                            incoming.consumeAsFlow().repeatEvery(50).mapNotNull { frame ->
+                            incoming.consumeAsFlow().onCompletion {
+                                throw ConnectionTerminated() // Signal everything to stop
+                            }.repeatEvery(50).mapNotNull { frame ->
                                 when (frame) {
                                     is Frame.Text -> listOf(frame.readText().toFloat())
                                     else -> null
                                 }
+                            }.catch {
+                                // This is in order to stop the `repeatEvery` operator
+                                when (it) {
+                                    is ConnectionTerminated -> log.debug("Stopped due to $it")
+                                    else -> throw it
+                                }
                             })
                     } finally {
+                        log.debug("Connection closed")
+                        incoming.cancel()
                         close(CloseReason(CloseReason.Codes.NORMAL, "Ended"))
                     }
                 }
