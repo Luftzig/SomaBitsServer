@@ -159,7 +159,7 @@ fun Application.module() {
                             device.address,
                             device.port,
                             patternString,
-                            incoming.consumeAsFlow().mapNotNull { frame ->
+                            incoming.consumeAsFlow().repeatEvery(50).mapNotNull { frame ->
                                 when (frame) {
                                     is Frame.Text -> listOf(frame.readText().toFloat())
                                     else -> null

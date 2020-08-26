@@ -1,14 +1,13 @@
 import kotlinx.coroutines.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runBlockingTest
 import kotlinx.coroutines.test.setMain
 import org.spekframework.spek2.Spek
 import org.spekframework.spek2.style.specification.describe
+import se.kth.somabits.common.repeatEvery
 import se.kth.somabits.common.windowed
 import kotlin.test.assertEquals
 
@@ -61,5 +60,9 @@ object FlowExtentionsSpek : Spek({
                 )
             }
         }
+    }
+
+    describe("repeatEvery") {
+        // TODO: Not sure how to implement this. Seems to work though
     }
 })

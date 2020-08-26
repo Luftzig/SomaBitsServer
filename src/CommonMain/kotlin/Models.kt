@@ -36,7 +36,10 @@ data class BitsInterface(
     val oscPattern: String,
     val range: Pair<Int, Int>?,
     val units: String = "Unknown"
-)
+) {
+    fun oscName() =
+        oscPattern.split("/").drop(2).joinToString("/")
+}
 
 /**
  * Represents a single Soma Bit and its interfaces. A Soma bit device is a service available at a specific network

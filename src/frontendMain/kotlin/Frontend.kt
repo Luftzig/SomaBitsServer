@@ -2,9 +2,7 @@ package se.kth.somabits.frontend
 
 import dev.fritz2.binding.*
 import dev.fritz2.dom.Tag
-import dev.fritz2.dom.html.Canvas
-import dev.fritz2.dom.html.Div
-import dev.fritz2.dom.html.HtmlElements
+import dev.fritz2.dom.html.*
 import dev.fritz2.dom.html.render
 import dev.fritz2.dom.mount
 import dev.fritz2.dom.valuesAsNumber
@@ -20,8 +18,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.w3c.dom.CanvasRenderingContext2D
 import org.w3c.dom.Element
+import org.w3c.dom.HTMLElement
 import se.kth.somabits.common.*
 import kotlin.browser.window
+import kotlin.collections.Map
 
 const val devicesSampleRateMs: Long = 5000
 
@@ -106,6 +106,7 @@ suspend fun main() {
 
     render {
         div("container") {
+            custom("style") { domNode.innerText = css.render() }
             div("col-md-12") {
                 header(addressStore)
 
@@ -184,39 +185,62 @@ private fun HtmlElements.header(addressStore: RootStore<List<String>>) {
     }
 }
 
+@ExperimentalCoroutinesApi
 private fun HtmlElements.messages(messagesStore: ConnectionsStore): Div =
     div("row") {
         h3("col-md-12") { text("Connections: ") }
-        div("col-md-12") {
-            messagesStore.data
-                .map { it.entries.toList() }
-                .each()
-                .render { (connectionId, socket) ->
-                    val (deviceName, bitsIo) = connectionId
-                    div("row") {
-                        div("col-md-3") {
-                            +"${deviceName.name} ${bitsIo.oscPattern}"
-                        }
-                        div("col-md-5") {
-                            bitsInterface(bitsIo, socket, deviceName)
-                        }
-                        div("col-md-3") {
-                            socket.errors.map {
-                                console.warn("Error from websocket")
-                                console.warn(it)
-                                render {
-                                    span { text(it.toString()) }
-                                }
-                            }.bind()
-                            button {
-                                +"×"
-                                clicks.map { connectionId } handledBy messagesStore.removeInterface
-                            }
-                        }
-                    }
-                }.bind()
+        div("col-md-5 sensors") {
+            messagesStore.data.map {
+                it.filterKeys { (_, io) -> io.type == BitsInterfaceType.Sensor }
+            }.render {
+                sensors(it, messagesStore)
+            }.bind()
+        }
+        div("col-md-2 couplings") { }
+        div("col-md-5 actuators") {
+            messagesStore.data.map {
+                it.filterKeys { (_, io) -> io.type == BitsInterfaceType.Actuator }
+            }.render {
+                actuators(it, messagesStore)
+            }.bind()
         }
     }
+
+private fun HtmlElements.sensors(sensorConn: ConnectionsMap, messagesStore: ConnectionsStore): Tag<HTMLElement> =
+    div("sensors") {
+        sensorConn.entries.forEach { (connenctionId, connection) ->
+            sensor(connenctionId, connection, messagesStore)
+        }
+    }
+
+private fun HtmlElements.sensor(
+    connectionId: ConnectionId,
+    connection: WebSocketConnection,
+    messagesStore: ConnectionsStore
+): Tag<HTMLElement> {
+    val (bit, io) = connectionId
+    val sharedFlow = connection.messages.broadcastIn(GlobalScope).asFlow()
+    val points = sharedFlow.windowed(300).sample(100).map {
+        it.mapNotNull { event -> event.data.toString().toDoubleOrNull() }
+    }
+    return div("sensor") {
+        h5 {
+            +"${bit.name}: ${io.oscName()}"
+        }
+        button("btn btn-warning float-left") {
+            +"x"
+            clicks.map { connectionId } handledBy messagesStore.removeInterface
+        }
+        // To resolve type ambiguity
+        val detailsInner: Details.() -> Unit = {
+            summary {
+                sharedFlow.map { it.data.toString() }.render { span { +"$it" } }.bind()
+            }
+            readingsPlot(points, io.range, widthPx = domNode.parentElement?.clientWidth?.toDouble() ?: 300.0)
+        }
+        details(content = detailsInner)
+    }
+}
 
 
 @FlowPreview
@@ -224,7 +248,8 @@ private fun HtmlElements.messages(messagesStore: ConnectionsStore): Div =
 private fun HtmlElements.bitsInterface(
     bitsIo: BitsInterface,
     socket: WebSocketConnection,
-    deviceName: ServiceName
+    deviceName: ServiceName,
+    containerWidth: Int
 ): Tag<*> =
     when (bitsIo.type) {
         BitsInterfaceType.Unknown -> span { +"Unknown" }
@@ -233,12 +258,13 @@ private fun HtmlElements.bitsInterface(
             val points = socket.messages.windowed(300).sample(100).map {
                 it.mapNotNull { event -> event.data.toString().toDoubleOrNull() }
             }
-            readingsPlot(points, bitsIo.range)
+            readingsPlot(points, bitsIo.range, widthPx = containerWidth.toDouble())
         }
         BitsInterfaceType.Actuator -> {
             val inputName = "${deviceName.name}-${bitsIo.type}-${bitsIo.id}"
             val valueStore = storeOf(0.0)
             input(id = inputName) {
+                attr("style", "width: 100%;")
                 type = const("range")
                 name = const(inputName)
                 bitsIo.range?.let {
@@ -260,10 +286,15 @@ private fun HtmlElements.bitsInterface(
         }
     }
 
-private fun HtmlElements.readingsPlot(points: Flow<List<Double>>, range: Pair<Int, Int>?): Canvas {
-    val widthPx = 300.0
+private fun HtmlElements.readingsPlot(
+    points: Flow<List<Double>>,
+    range: Pair<Int, Int>?,
+    widthPx: Double = 300.0,
+    heightPx: Double = 166.0,
+    maxSamples: Int = 300
+): Canvas {
     val gutterPx = 32.0
-    val heightPx = 56.0
+    val verticalGutter = heightPx * 0.05
     val canvas = canvas {
         width = flowOf((widthPx + gutterPx).toInt())
         height = flowOf(heightPx.toInt())
@@ -272,16 +303,17 @@ private fun HtmlElements.readingsPlot(points: Flow<List<Double>>, range: Pair<In
         points.collect { points ->
             val ctx = canvas.domNode.getContext("2d") as CanvasRenderingContext2D
             val displayableData = points.take(widthPx.toInt())
-            fun yPosition(v: Double): Double =
-                heightPx - ((heightPx / (range?.second ?: 1)) * 0.9 * v + (0.1 * heightPx))
+            val domain = range?.let { it.first.toDouble() to it.second.toDouble() } ?: 0.0 to 1.0
+            val yPosition = LinearScale(domain, heightPx - verticalGutter to verticalGutter)
+            val xPosition = LinearScale(0.0 to maxSamples.toDouble(), 0.0 to widthPx - gutterPx)
             ctx.clearRect(0.0, 0.0, widthPx + gutterPx, heightPx)
             ctx.beginPath()
             ctx.lineWidth = 1.0
             displayableData.firstOrNull()?.let {
-                ctx.moveTo(0.0, yPosition(it))
+                ctx.moveTo(0.0, yPosition.apply(it))
             }
             displayableData.forEachIndexed { idx, v ->
-                ctx.lineTo(idx.toDouble(), yPosition(v))
+                ctx.lineTo(xPosition.apply(idx.toDouble()), yPosition.apply(v))
             }
             ctx.strokeStyle = "rgb(0, 0, 0)"
             ctx.stroke()
@@ -291,7 +323,7 @@ private fun HtmlElements.readingsPlot(points: Flow<List<Double>>, range: Pair<In
             ctx.fillText((range?.first ?: 0).toString(), widthPx + 4.0, heightPx)
             ctx.fillText((range?.second ?: 1).toString(), widthPx + 4.0, fontSize.toDouble())
             displayableData.lastOrNull()?.let {
-                val pos = yPosition(it)
+                val pos = yPosition.apply(it)
                 if (pos > fontSize * 2 && pos < heightPx - (fontSize)) {
                     ctx.fillText(it.toString(), widthPx + 4.0, pos)
                 }
@@ -299,5 +331,58 @@ private fun HtmlElements.readingsPlot(points: Flow<List<Double>>, range: Pair<In
         }
     }
     return canvas
+}
+
+fun HtmlElements.actuators(
+    connectionsMap: Map<Pair<ServiceName, BitsInterface>, WebSocketConnection>,
+    messagesStore: ConnectionsStore
+): Tag<HTMLElement> =
+    div("actuators") {
+        connectionsMap.entries.forEach { (connenctionId, connection) ->
+            actuator(connenctionId, connection, messagesStore)
+        }
+    }
+
+fun HtmlElements.actuator(
+    connectionId: Pair<ServiceName, BitsInterface>,
+    connection: WebSocketConnection,
+    messagesStore: ConnectionsStore
+): Tag<HTMLElement> {
+    val (bit, io) = connectionId
+    return div("actuator") {
+        h5 {
+            +"${bit.name}: ${io.oscName()}"
+        }
+        button("btn btn-warning float-left") {
+            +"x"
+            clicks.map { connectionId } handledBy messagesStore.removeInterface
+        }
+        val inputName = "${bit.name}-${io.type}-${io.id}"
+        val valueStore = storeOf(0.0)
+        div("controller-wrapper") {
+            div { +"${io.range?.first}" }
+            div("input-wrapper") {
+                input(baseClass = "input", id = inputName) {
+                    type = const("range")
+                    name = const(inputName)
+                    io.range?.let {
+                        min = const(io.range.first.toString())
+                        max = const(io.range.second.toString())
+                    }
+                    value = valueStore.data.map { it.toString() }
+                    changes.valuesAsNumber()
+                        .onEach { connection.send(it.toString()) } handledBy valueStore.update
+                }
+                span {
+                    valueStore.data.render {
+                        label(`for` = inputName) {
+                            +it.toString()
+                        }
+                    }.bind()
+                }
+            }
+            div { +"${io.range?.second}" }
+        }
+    }
 }
 

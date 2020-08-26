@@ -112,6 +112,7 @@ kotlin {
                 implementation "dev.fritz2:core:$fritz_version"
                 implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$kotlinx_version"
                 implementation "org.jetbrains.kotlinx:kotlinx-serialization-runtime-js:$serialization_version"
+                implementation "xyz.nulldev:aza-kotlin-css-js:1.01"
             }
         }
         frontendTest {
