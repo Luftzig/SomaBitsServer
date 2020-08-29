@@ -63,6 +63,23 @@ object FlowExtentionsSpek : Spek({
     }
 
     describe("repeatEvery") {
-        // TODO: Not sure how to implement this. Seems to work though
+        runBlockingTest {
+            val f = flow {
+                emit(1)
+                delay(1000)
+                emit(2)
+                delay(1000)
+                emit(3)
+                delay(1000)
+                emit(4)
+            }.repeatEvery(100)
+            val l = mutableListOf<Int>()
+            val job = launch {
+                f.toList(l)
+            }
+            advanceTimeBy(1499)
+            job.cancel()
+            assertEquals(List(10) { 1 } + List(5) { 2 }, l)
+        }
     }
 })
